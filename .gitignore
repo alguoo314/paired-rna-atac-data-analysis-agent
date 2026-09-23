@@ -1,0 +1,13 @@
+.env
+.claude/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+/data/
+/logs/
+/cache/
+*.h5ad
+*.h5mu
+.venv/
+config/local_paths.yaml

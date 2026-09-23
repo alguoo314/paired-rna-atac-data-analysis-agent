@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multiome_agent"
+version = "0.1.0"
+description = "LLM agent for QC and hypothesis generation on paired scRNA+scATAC (multiome) data"
+requires-python = ">=3.11"
+# Later Day-1/Day-2 steps append heavier scientific-computing deps here
+# (numpy, scanpy, muon, snapatac2, pychromvar, anthropic, ...) as each is
+# actually used, instead of front-loading an untested dependency list.
+dependencies = [
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "scanpy>=1.11",
+    "anndata>=0.12",
+    "muon>=0.1.9",
+    "scikit-learn>=1.9",
+    "scikit-image>=0.26",  # scanpy.pp.scrublet's automatic threshold detection needs this
+    "snapatac2>=2.9",
+    "pysam>=0.24",
+    "leidenalg>=0.12",
+    "pychromvar>=0.0.4",  # brings biopython (JASPAR parsing) + MOODS-python (motif scanning)
+    "py2bit>=1.0",  # reads data/raw/reference/hg38.2bit for peak sequences
+    "anthropic>=1.7",
+    "requests>=2.31",
+    "matplotlib>=3.9",  # scripts/plot_cost_vs_accuracy.py
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = ["slow: real snapatac2/fragments-file reruns (seconds to minutes), not run by default filtering"]

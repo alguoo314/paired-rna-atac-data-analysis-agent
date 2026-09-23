@@ -1,0 +1,79 @@
+# Known-biology checklist for the PBMC 10k Multiome dev dataset.
+#
+# Per CLAUDE.md's "Known-biology recovery" eval item: written BEFORE looking
+# at any agent output, as ground truth to score recall against (and to count
+# incorrect "expected signature" claims against). Content here is CLAUDE.md's
+# own PBMC known-biology spec, transcribed verbatim into a scoreable
+# structure -- not invented by a build step. Motif names are exact JASPAR
+# 2024 CORE vertebrates non-redundant IDs, verified present in
+# data/raw/reference/jaspar2024_core_vertebrates_nr.jaspar (checked against
+# the actual cached file, not assumed) before being written here.
+#
+# Scoring convention for every item: "recovered" means the fixed-core
+# pipeline's own computed tables satisfy the check (see
+# checklist_scoring.py) -- e.g. a marker gene must be a significant marker
+# (padj<0.05, logFC>1) of at least one Leiden cluster, not just present in
+# the dataset. An item that fails to recover is a real miss, not an error --
+# record it, don't hide it.
+
+dataset: pbmc10k_multiome
+source: "CLAUDE.md, 'Known-biology recovery' section"
+
+rna_markers:
+  - gene: CD14
+    cell_type: monocyte
+  - gene: LYZ
+    cell_type: monocyte
+  - gene: MS4A1
+    cell_type: B cell
+  - gene: CD3E
+    cell_type: T cell
+  - gene: NKG7
+    cell_type: NK cell
+
+# Motifs expected to show detectable, lineage-appropriate accessibility
+# signal. "Myeloid" here covers both SPI1/PU.1 and the CEBP family per
+# CLAUDE.md's phrasing ("SPI1/PU.1 and CEBP (myeloid)") -- CEBP has multiple
+# paralogs in JASPAR (CEBPA/B/D/E, plus a Ddit3::Cebpa heterodimer motif);
+# any one of them counting as "the CEBP family present" is the right bar,
+# not requiring every paralog individually. cell_type is "monocyte" (not
+# CLAUDE.md's literal "myeloid") to match the RNA markers section's
+# granularity -- checklist_scoring.py connects a motif to a cluster only
+# when both sections agree on the exact cell_type label, and this dataset's
+# only myeloid population present in blood-derived PBMC is monocytes (no
+# neutrophils/etc.), so "myeloid" and "monocyte" denote the same population
+# here; using two different strings for it made these two entries
+# permanently unscoreable (caught by actually running the scorer, not by
+# adjusting to match any agent output).
+motifs:
+  - motif_id: MA0080.7
+    motif_name: Spi1
+    cell_type: monocyte
+  - motif_id: MA0102.5
+    motif_name: CEBPA
+    cell_type: monocyte
+    motif_family_alternates: [MA0466.4/CEBPB, MA0836.3/CEBPD, MA0837.3/CEBPE, MA0019.2/Ddit3::Cebpa]
+  - motif_id: MA0014.4
+    motif_name: PAX5
+    cell_type: B cell
+  - motif_id: MA0154.5
+    motif_name: EBF1
+    cell_type: B cell
+  - motif_id: MA0690.3
+    motif_name: TBX21
+    cell_type: NK cell
+  - motif_id: MA0800.2
+    motif_name: EOMES
+    cell_type: NK cell
+
+# "TF expression should track its motif accessibility" -- CLAUDE.md names
+# this as a general expectation, not tied to one specific TF; SPI1 is used
+# as the representative check throughout this repo's fixed-core pipeline
+# (motif_deviations.py) since it has the least ambiguous single-name JASPAR
+# match among the myeloid set (CEBP has multiple paralogs, complicating a
+# single "the" motif choice for this specific check).
+tf_expression_tracks_motif:
+  - gene: SPI1
+    motif_id: MA0080.7
+    motif_name: Spi1
+    expected: positive_correlation

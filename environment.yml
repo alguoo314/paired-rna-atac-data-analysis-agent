@@ -1,0 +1,9 @@
+name: multiome_agent
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -e .[dev]
