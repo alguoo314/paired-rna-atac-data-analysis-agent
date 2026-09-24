@@ -28,8 +28,13 @@ logger = get_logger(__name__)
 RECORD_NOVEL_FINDING_TOOL = {
     "name": "record_novel_finding",
     "description": (
-        "Record ONE candidate novel finding: a specific, checkable pattern in this data that "
-        "goes beyond the already-confirmed known-biology checklist. Call up to 3 times."
+        "Record ONE candidate novel finding that survived YOUR OWN literature check: a specific, "
+        "checkable pattern in this data that goes beyond the already-confirmed known-biology "
+        "checklist, AND that a real search_pubmed (+ fetch_pubmed_abstracts on any promising hit) "
+        "you just ran did NOT already find clearly reported. If your literature check turns up "
+        "that exact relationship, do NOT call this -- silently move on to a different candidate "
+        "instead. You may try up to 6 distinct candidates this way, but stop calling this tool "
+        "once you've recorded 3 that survived their own check."
     ),
     "input_schema": {
         "type": "object",
@@ -102,12 +107,24 @@ already-established literature findings you (or a prior step) confirmed:
 
 {covered}
 
-Propose up to 3 NOVEL findings: specific, checkable patterns in THIS data that go beyond what's \
-already covered above -- not a restatement of a known-biology checklist item. Each must be \
-grounded in real tool evidence you cite with actual numbers, with an honest confidence level \
-(high/medium/low). It is completely fine to propose fewer than 3, or zero, if you don't have a \
-genuinely novel, well-evidenced candidate -- don't force it or restate an already-known \
-relationship just to fill the quota. Record each with `record_novel_finding`.
+Try up to 6 candidate NOVEL findings: specific, checkable patterns in THIS data that go beyond \
+what's already covered above -- not a restatement of a known-biology checklist item. For EACH \
+candidate, before deciding whether to record it: (1) gather the real tool evidence for it (actual \
+numbers, not guessed), then (2) run at least one `search_pubmed` call -- and `fetch_pubmed_abstracts` \
+on any promising hit -- to check whether this SAME specific pattern is already reported. If your \
+own literature check already shows it's well-established, SELF-REJECT that candidate silently: do \
+NOT call `record_novel_finding` for it, just move on and try a different candidate. Only call \
+`record_novel_finding` for a candidate that survives its own literature check, with an honest \
+confidence level (high/medium/low). Stop once you've recorded 3 findings that survived this way, \
+or once you've tried 6 distinct candidates, whichever comes first. It is completely fine -- \
+expected, even -- to end up with fewer than 3 recorded findings (even zero) if every candidate you \
+tried turned out to already be known -- don't force a weaker or already-known candidate just to \
+fill the quota.
+
+If this dataset pools multiple distinct cell lines/lineages, don't concentrate all your candidates \
+on the same single line -- try to span them across different lines chosen at random (one about \
+line A, another about line B, another about line C), each still as specific and well-evidenced as \
+if you'd focused on one line the whole time.
 
 {classify_note}"""
 
@@ -148,10 +165,14 @@ class JudgedFinding:
 
 def propose_novel_findings(
     mdata, qc_summary: str, dataset_context: str | None = None, checklist_summary: str = "",
-    model: str | None = None, max_turns: int = 25, is_negative_control: bool = False,
+    model: str | None = None, max_turns: int = 45, is_negative_control: bool = False,
 ) -> tuple[list[dict], AgentRunResult]:
     """`dataset_context` defaults to `OWN_DATA_CONTEXT` (see
-    `checklist_generator.generate_checklist`'s docstring for why)."""
+    `checklist_generator.generate_checklist`'s docstring for why). Default
+    `max_turns` raised from the original 25: trying up to 6 candidates, each
+    needing its own tool-evidence gathering AND a literature self-check
+    before the model decides whether to record it, needs real headroom.
+    """
     result = run_agent(
         _novelty_question(checklist_summary, is_negative_control=is_negative_control), model=model,
         max_turns=max_turns, mdata=mdata, qc_summary=qc_summary, tools=NOVELTY_TOOLS,
@@ -160,6 +181,22 @@ def propose_novel_findings(
     findings = [tc["input"] for tc in result.tool_calls if tc["name"] == "record_novel_finding" and not tc.get("is_error", False)]
     for f in findings:
         f.setdefault("finding_type", "positive_relationship")  # schema "required" isn't server-enforced
+    # Deterministic cap, not relied on the model's own discipline (same
+    # pattern as checklist_generator's dedup): the prompt asks the model to
+    # stop recording once it has 3 findings that survived their own
+    # literature self-check, but don't trust that alone. Only caps
+    # "positive_relationship" findings -- "no_signal_or_concern" findings
+    # aren't judged downstream anyway, so there's no reason to cap those.
+    capped, n_positive = [], 0
+    for f in findings:
+        if f.get("finding_type") == "positive_relationship":
+            n_positive += 1
+            if n_positive > 3:
+                continue
+        capped.append(f)
+    if n_positive > 3:
+        logger.warning("Model recorded %d positive_relationship findings; keeping only the first 3", n_positive)
+    findings = capped
     logger.info("Proposed %d novel finding(s), cost=$%.5f", len(findings), result.estimated_cost_usd)
     return findings, result
 

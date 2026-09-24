@@ -17,6 +17,7 @@ import pytest
 from multiome_agent.agent.checklist_generator import ChecklistItem
 from multiome_agent.agent.novelty import JudgedFinding
 from multiome_agent.agent.report_generator import ReportCost, _extract_identity_blurb, _render_section1, _render_section2, _render_section3, _render_section4, _render_section5, generate_report
+from multiome_agent.core.clustering import RNA_CLUSTER_KEY
 
 
 def test_extract_identity_blurb_real_pattern_with_double_asterisk_before_colon():
@@ -99,10 +100,10 @@ def test_render_section1_includes_loader_decision_and_summary():
 
 
 def test_render_section2_handles_empty_and_populated():
-    assert "no genes were checked" in _render_section2([])
+    assert "no cluster had a significant top marker" in _render_section2([], n_rna_clusters=1)
     checks = [{"gene": "CD14", "rna_cluster": "1", "matched_atac_cluster": "1", "gene_activity_confirms": True}]
-    text = _render_section2(checks)
-    assert "CD14" in text and "1/1 checked markers cross-validate" in text
+    text = _render_section2(checks, n_rna_clusters=2)
+    assert "CD14" in text and "1/1 clusters' top markers cross-validate" in text and "1/2 RNA cluster(s) skipped" in text
 
 
 def test_render_section3_groups_by_category_and_flags_missing():
@@ -110,6 +111,21 @@ def test_render_section3_groups_by_category_and_flags_missing():
     text = _render_section3(items, "This looks like PBMC based on markers.")
     assert "CD14" in text
     assert "no grounded, data-present candidate" in text  # motif/tf_motif_tracking empty
+    assert "no candidate this run clearly failed" in text  # nothing rejected
+
+
+def test_render_section3_splits_confirmed_and_rejected():
+    items = [
+        ChecklistItem("rna_marker", "CD14", "monocyte marker", "123", "Nature", "2020", True),
+        ChecklistItem("tf_motif_tracking", "JUNB", "should track its own motif", "456", "Cell", "2021", False),
+    ]
+    text = _render_section3(items, "This looks like PBMC based on markers.")
+    confirmed_idx = text.index("## Confirmed by data")
+    rejected_idx = text.index("## Rejected by data")
+    assert confirmed_idx < rejected_idx
+    assert "CD14" in text[confirmed_idx:rejected_idx]
+    assert "JUNB" not in text[confirmed_idx:rejected_idx]
+    assert "JUNB" in text[rejected_idx:]
 
 
 def _fake_model_results(detected, diag, false_alarm, cost, answer="Looks fine."):
@@ -201,6 +217,7 @@ class _FakeScenarioResult:
 
 def test_generate_report_orchestration_writes_file_with_all_mocked(tmp_path):
     fake_mdata = MagicMock()
+    fake_mdata.mod["rna"].obs[RNA_CLUSTER_KEY].nunique.return_value = 3
     fake_decision = MagicMock(strategy="combined_single_file", reasoning="one file, both feature types", cost_usd=0.001)
     checklist_items = [ChecklistItem("rna_marker", "CD14", "monocyte marker", "1", "Nature", "2020", True)]
     checklist_result = _FakeAgentResult(answer="This is PBMC.")
@@ -220,6 +237,7 @@ def test_generate_report_orchestration_writes_file_with_all_mocked(tmp_path):
          patch("multiome_agent.agent.report_generator.propose_novel_findings", return_value=(findings, novelty_result)), \
          patch("multiome_agent.agent.report_generator.judge_novel_findings", return_value=judged), \
          patch("multiome_agent.agent.report_generator.check_novelty_negative_control", return_value={"n_findings_proposed": 0, "findings": [], "cost_usd": 0.01, "answer": "none"}), \
+         patch("multiome_agent.agent.report_generator.systematic_cross_modal_sweep", return_value=[{"gene": "CD14", "rna_cluster": "1", "matched_atac_cluster": "1", "gene_activity_confirms": True}]), \
          patch("multiome_agent.eval.eval_harness.build_scenarios", return_value=[{"fault_type": "clean_control"}]), \
          patch("multiome_agent.eval.eval_harness.run_model_eval", return_value=fake_model_eval_result), \
          patch("multiome_agent.eval.fault_injection.shuffle_rna_atac_pairing", return_value=(fake_mdata, MagicMock())), \

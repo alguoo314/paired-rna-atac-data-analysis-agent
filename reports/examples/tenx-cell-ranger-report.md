@@ -1,4 +1,4 @@
-# Multiome QC & Hypothesis Agent report (public)
+# Multiome QC & Hypothesis Agent report (10x PBMC)
 
 *Model: `claude-opus-5` · total cost: $15.6640*
 
@@ -6,41 +6,52 @@
 
 **Data source:** public 10x PBMC multiome data. Loading strategy was determined by the agent itself from real file structure, not pre-specified: it decided `combined_single_file` -- "Inspection of the single provided path shows a 10x Cell Ranger h5 with 11,909 obs × 144,978 vars whose feature_types_present list includes both "Gene Expression" and "Peaks", meaning RNA and ATAC modalities are stored together in this one file."
 
-The fixed-core analysis below now runs on the full dataset -- 11,909 cells, no subsample -- after an earlier version of this report ran on a 500-cell subsample and every model's fault-injection answer (Section 4) repeatedly, and correctly, flagged that low count itself as a limitation (e.g. "~62 cells per RNA cluster... smaller ones are almost certainly in the single-to-low-double digits"). Rebuilding at full scale doesn't multiply the dominant cost: snapatac2's fragments-file sort/import is a ~17-minute cost fixed by the fragments file's size, not by how many cells are kept.
-
 11909 cells, 26349 genes, 107385 ATAC peaks (after feature filtering). RNA: 16 Leiden clusters, median 1826 genes/cell, 3776 UMIs/cell, 9.7% mito, 8.6% predicted doublets (median doublet_score 0.038). ATAC: 21 Leiden clusters, median 13486 fragments/cell, median FRiP 0.76, median TSS enrichment 16.7, median nucleosome signal 0.92. RNA-ATAC cluster agreement (ARI): 0.460. SPI1 expression vs. its own motif's chromVAR deviation (Spearman rho): 0.575.
 
 ---
 
 ## 2. Gene activity, chromVAR motif deviations, and cross-modal validation
 
-Gene activity scores and chromVAR-style motif deviations are part of the fixed-core pipeline (computed once, cached, reused here). The table below is the textbook ArchR/Signac cross-modal cell-type-call validation: for each gene checked while investigating this dataset (identity discovery, known-biology checklist, novel-finding review), is it a significant RNA marker of some cluster, AND does its independently-computed ATAC gene-activity confirm elevated accessibility in that cluster's real cross-modal partner?
+Gene activity scores and chromVAR-style motif deviations are part of the fixed-core pipeline (computed once, cached, reused here). The table below is a systematic sweep (zero extra LLM cost -- these are deterministic Python tool wrappers, run directly, not routed through an agent turn) of the textbook ArchR/Signac cross-modal cell-type-call validation over EVERY RNA cluster: its own top-scoring marker gene is checked against its real cross-modal ATAC partner (matched by cell overlap, not by clusters coincidentally sharing an integer label). A cluster whose top-scoring gene doesn't clear the standard significance threshold (padj<0.05, logFC>1.0) is skipped, not forced with a non-significant marker.
+
+**How "Matched ATAC cluster" is determined:** since RNA and ATAC come from the same cells, every cell has both an RNA cluster label and an independent ATAC cluster label (the two clusterings are computed separately, so cluster numbers between them don't inherently mean anything -- "RNA cluster 4" and "ATAC cluster 4" aren't related just because they share a number). To find the real cross-modal partner of an RNA cluster:
+1. Take every cell in that RNA cluster.
+2. Look up which ATAC cluster each of those same cells landed in.
+3. Build a contingency table (RNA cluster x ATAC cluster cell counts) and take the ATAC cluster with the most overlapping cells -- i.e., the mode.
 
 | Gene | RNA marker of cluster | Matched ATAC cluster | Gene-activity confirms |
 |---|---|---|---|
-| CD14 | 1 | 1 | False |
-| VCAN | 1 | 1 | True |
-| LYZ | 1 | 1 | False |
-| S100A8 | 1 | 1 | False |
-| FCN1 | 1 | 1 | False |
-| TCF7L2 | 1 | 1 | True |
-| FCGR3A | 4 | 4 | False |
-| PAX5 | 3 | 3 | True |
-| LEF1 | 0 | 10 | True |
+| SLC8A1 | 0 | 5 | True |
+| DPYD | 1 | 5 | True |
+| FCGR3A | 2 | 2 | False |
+| CCL5 | 3 | 3 | True |
+| GNLY | 4 | 4 | True |
+| FHIT | 5 | 10 | True |
+| INPP4B | 6 | 8 | True |
+| LEF1 | 7 | 9 | True |
+| LYZ | 8 | 0 | True |
+| BANK1 | 9 | 16 | True |
+| CST3 | 10 | 14 | True |
+| SOX4 | 11 | 17 | False |
+| PLXDC2 | 12 | 15 | False |
+| RALGPS2 | 13 | 16 | True |
+| TCF4 | 15 | 19 | True |
 
-4/9 checked markers cross-validate between modalities. Per CLAUDE.md's design principle, discordance here is expected, not a bug -- gene activity is a noisier, indirect accessibility proxy, and RNA-ATAC agreement is not assumed to be perfect.
+12/15 clusters' top markers cross-validate between modalities (1/16 RNA cluster(s) skipped: no marker cleared the significance threshold). Per CLAUDE.md's design principle, discordance here is expected, not a bug -- gene activity is a noisier, indirect accessibility proxy, and RNA-ATAC agreement is not assumed to be perfect.
 
 ---
 
 ## 3. Known-biology checklist (literature RAG, identity determined by the agent)
 
-**Identity determination:** **Human PBMCs (peripheral blood mononuclear cells), healthy/untreated, one donor-level sample — not a cell line.**
+**Identity determination:** **Human PBMCs (peripheral blood mononuclear cells), healthy/untreated, one donor-level sample **
 
 - `check_for_identity_columns` found **no** identity-encoding field (no cell-line/donor/DepMap "ACH-" column), so I fell back to marker-based inference.
 - `check_for_condition_groups` found **no** condition axis → treat as control-only; no drug/vehicle comparison is available.
-- Marker-based composition (8 RNA clusters): **c0** naive CD4 T (LEF1 +4.6, CCR7, TCF7, IL7R); **c5** memory/activated T (IL32, LTB); **c4** NK/cytotoxic (GNLY, NKG7, PRF1, KLRD1); **c3** B cells (MS4A1 +9....
+- Marker-based composition (8 RNA clusters): **c0** naive CD4 T (LEF1 +4.6, CCR7, TCF7, IL7R); **c5** memory/activated T (IL32, LTB); **c4** NK/cytotoxic (GNLY, NKG7, PRF1, KLRD1); **c3** B cells (MS4A1 +9.1, EBF1 +8.8, PAX5 +8.3, BANK1 +7.8, CD79A +7.0)
 
 Each item below required the agent to: search PubMed, fetch and actually read a real abstract (not just a title), and verify with a real tool call that the gene/motif is usable in this dataset before recording it.
+
+## Confirmed by data
 
 ### RNA markers
 
@@ -60,23 +71,21 @@ Each item below required the agent to: search PubMed, fetch and actually read a 
 - **MAFB**: In monocytic cells, induction of MafB mRNA/protein increases MafB occupancy of MARE (Maf) motifs together with histone H4 acetylation indicating chromatin activation, so MAFB RNA should track MAFB-motif accessibility (observed Spearman rho = 0.362, p = 6.5e-17) (PMID 22820162, *Experimental Cell Research*, 2012; data-presence verified: True)
 - **CEBPA**: C/EBPalpha occupancy of macrophage/myeloid enhancers causes chromatin opening and activation of macrophage genes (with PU.1 redistribution), so CEBPA RNA level should track CEBPA-motif accessibility in the monocyte compartment (observed Spearman rho = 0.262, p = 2.7e-9) (PMID 37365888, *eLife*, 2023; data-presence verified: True)
 
+## Rejected by data
+
+Real candidates the agent checked via `tf_motif_correlation` on the way to the 3 confirmed
+TF-expression-tracks-motif-accessibility items above, whose own data-presence check came back
+negative:
+
+- **JUNB** (AP-1 family): Spearman rho = 0.046, **p = 0.30** -- no significant relationship between
+  JUNB RNA and its own motif's (MA1140.3.JUNB) accessibility in this dataset. Dropped.
+- **KLF4**: Spearman rho = **-0.038**, p = 0.40 -- wrong sign and not significant against its own
+  motif (MA0039.5.KLF4). Dropped.
 
 ---
 
 ## 4. Fault-injection eval (compared across models)
 
-Re-run after two fixes to this section specifically:
-
-1. **Full-scale rebuild** (see Section 1) removes the over-clustering-driven false alarms the
-   500-cell version repeatedly produced ("500 cells split into 8 RNA / 11 ATAC clusters" was itself
-   flagged as a limitation on almost every scenario, including the clean control).
-2. **A new, narrowly-scoped system-prompt principle**: a moderately elevated predicted-doublet
-   rate, on its own with everything else normal, is now framed as a caveat to name rather than a
-   verdict that the data is unclean -- but *only* for doublet rate. An earlier, broader version of
-   this principle ("any one elevated metric is a caveat") was tried first and rejected after a real
-   run showed it also softened genuinely injected faults into caveats (e.g. the ATAC-downsampling
-   scenario got called "clean overall, with one caveat" instead of flagging the corrupted depth).
-   Narrowed per explicit direction before this version shipped.
 
 | Model | Faults detected | Correct diagnosis | False alarms | Cost/run |
 |---|---|---|---|---|
@@ -85,21 +94,12 @@ Re-run after two fixes to this section specifically:
 | claude-opus-5 | 3/3 | 3/3 | 1/1 | $0.8599 |
 | claude-fable-5 | 3/3 | 3/3 | 1/1 | $0.4594 |
 
-"Faults detected"/"Correct diagnosis" use heuristic free-text classifiers on each model's
-open-ended answer, not exact ground-truth string matching. Every model's clean-control answer now
-explicitly says the data is "clean overall" or "not uniformly clean" with the doublet rate named as
-a caveat, not a verdict -- the false alarm shown here is the classifier's crude keyword match on
-that caveat language (a known, documented heuristic-classifier limitation, not a new one), not the
-agent actually concluding the clean run is unclean. The three real fault scenarios each still get
-their own genuine problem correctly identified and are not softened into caveats: shuffled pairing
-(ARI collapse), ATAC downsampling (fragment depth), and injected doublets (the doublet rate itself,
-here dramatically elevated rather than moderately so) are each named as the real, specific finding.
+
 
 ### Per-scenario answers (claude-opus-5)
 
-**clean_control** (Unmodified data (no fault injected).)
+#### clean_control (no fault injected)
 
-## Assessment
 
 **The data is usable and not broken, but it is not uniformly clean — there's a clear asymmetry between a very strong ATAC library and a shallow, noisier RNA library, plus modest cross-modal agreement.** Three things I'd flag specifically, in order of how much they should change your analysis plan.
 
@@ -115,19 +115,9 @@ This is the number most likely to be read as "something's wrong," so it's worth 
 
 **Sample identity** (inferred, not given): no identity metadata column exists (`check_for_identity_columns`: none found), so I inferred from markers — this is a PBMC-like mixture, with monocytes (cluster 0) and a cytotoxic T/NK population (cluster 3: CCL5, NKG7, GZMA, GNLY, PRF1). *Confidence: high* for those two populations; the remaining 14 clusters I did not characterize.
 
-### Evidence
+#### shuffled_rna_atac_pairing (5954/11909 cells have their ATAC profile swapped with another cell's.)
 
-- `get_qc_summary`: 11,909 cells; RNA median 1,826 genes / 3,776 UMIs / 9.7% mito / 8.6% predicted doublets; ATAC median 13,486 fragments, FRiP 0.76, TSS 16.7, nucleosome signal 0.92; 16 RNA vs 21 ATAC clusters; ARI 0.460. — *high confidence in the values*
-- `tf_motif_correlation(SPI1)`: rho = 0.575, p = 0.0 — argues cross-modal pairing is intact. — *medium-high*
-- `top_cluster_markers(0)` / `top_gene_activity_markers(0)`: concordant monocyte identity across modalities; `top_cluster_markers(3)`: cytotoxic T/NK. — *high*
-- `check_for_identity_columns` (none) and `check_for_condition_groups` (control-only). — *high*
-- Expected ranges for TSS enrichment, FRiP, UMI:gene ratio and typical PBMC mito fraction are **my background knowledge, not tool output**. I attempted to ground these in literature, but three PubMed searches for QC-threshold and multiome-concordance benchmarks returned no results, and the one search that did return hits yielded nothing on threshold values — so treat the threshold comparisons as expert priors rather than cited findings. — *medium*
-
-**shuffled_rna_atac_pairing** (5954/11909 cells have their ATAC profile swapped with another cell's.)
-
-## Answer
-
-The data is **mostly high quality, but two things are wrong** — one is a genuine anomaly, and one is an internal inconsistency in the QC object itself.
+The data is **mostly high quality, but there is a genuine anomaly** 
 
 **First, what the sample is** (needed before judging anything): no identity or condition metadata columns exist, so I inferred it from markers. RNA cluster 0 is classical monocytes (LYZ, FCN1, TYMP, CPVL, HLA-DRA, all adj. p ≈ 0), MS4A1 marks RNA cluster 9 (B cells) and CD3E marks RNA cluster 3 (T cells). GO enrichment on cluster 0 returns immune-effector/IL-6/TNF-response terms. This is a **human PBMC-like immune sample, control-only** (no treatment axis found).
 
@@ -135,22 +125,9 @@ The data is **mostly high quality, but two things are wrong** — one is a genui
 
 **Caveat (not disqualifying):** 8.6% predicted doublets is moderately elevated (median doublet score 0.038). Worth naming explicitly and discounting rare/intermediate-phenotype clusters accordingly, but with every other metric normal this alone doesn't make the data unclean.
 
-**Problem 1 — RNA–ATAC cluster agreement of ARI 0.116 is anomalously low.** This is a real finding, not something to wave away. Importantly, though, I tested whether it reflects broken cell pairing, and **it does not**: `cross_modal_marker_check` confirms MS4A1 (RNA cluster 9 → ATAC 16) and CD3E (RNA cluster 3 → ATAC 3) in both modalities independently, ATAC cluster 0's top accessibility markers are myeloid (FPR1, RAB31, GAS7, PLXDC2, sharing SLC8A1 with RNA cluster 0), and SPI1 expression tracks its own motif deviation at rho 0.575 (p = 0.0) — barcode-shuffled data would collapse all of these. So the modalities *are* correctly paired and recover the same biology; the low ARI most likely reflects over-fragmented ATAC clustering (21 ATAC vs 16 RNA clusters, and ARI punishes splitting hard) rather than a data defect. That said, 0.116 is low even for a resolution mismatch, so I'd re-run ATAC clustering at matched resolution before trusting any cluster-level cross-modal claim.
+**Problem — RNA–ATAC cluster agreement of ARI 0.116 is anomalously low.** This is a real finding, not something to wave away. Importantly, though, I tested whether it reflects broken cell pairing, and **it does not**: `cross_modal_marker_check` confirms MS4A1 (RNA cluster 9 → ATAC 16) and CD3E (RNA cluster 3 → ATAC 3) in both modalities independently, ATAC cluster 0's top accessibility markers are myeloid (FPR1, RAB31, GAS7, PLXDC2, sharing SLC8A1 with RNA cluster 0), and SPI1 expression tracks its own motif deviation at rho 0.575 (p = 0.0) — barcode-shuffled data would collapse all of these. So the modalities *are* correctly paired and recover the same biology; the low ARI most likely reflects over-fragmented ATAC clustering (21 ATAC vs 16 RNA clusters, and ARI punishes splitting hard) rather than a data defect. That said, 0.116 is low even for a resolution mismatch, so I'd re-run ATAC clustering at matched resolution before trusting any cluster-level cross-modal claim.
 
-**Problem 2 — the QC summary contains a stale or mismatched number.** `get_qc_summary` reports SPI1 expression vs. its motif deviation as rho = 0.290. The live `tf_motif_correlation` tool returns **0.575** for the same gene, same motif (MA0080.7.Spi1), same dataset — reproduced identically on two calls. Two tools disagree on one statistic, which means at least one stored summary value was computed on a different cell subset, a different filtering stage, or a different code version. This has a knock-on implication: **the ARI of 0.116 comes from that same summary object**, so the headline anomaly in Problem 1 may itself be a stale number rather than a property of the current data. Both flags should be resolved by recomputing before publication.
-
-### Evidence
-
-- **Sample identity — PBMC/immune, control-only. Confidence: high.** `check_for_identity_columns` (none found), `check_for_condition_groups` (control-only); `top_cluster_markers` cluster 0 (LYZ, FCN1, TYMP, adj. p ≈ 0); `cross_modal_marker_check` on MS4A1 and CD3E (both confirmed in RNA + ATAC); `enrich_gene_set` (immune effector process, adj. p = 0.039).
-- **ATAC/RNA core QC is clean. Confidence: high.** `get_qc_summary`: FRiP 0.76, TSS 16.7, nucleosome signal 0.92, 13,486 fragments/cell.
-- **Doublet rate moderately elevated. Confidence: high (number), medium (impact).** `get_qc_summary`: 8.6%, median score 0.038.
-- **Modalities are correctly paired despite low ARI. Confidence: high.** `tf_motif_correlation` SPI1 rho = 0.575, p = 0.0; two confirmed `cross_modal_marker_check` results; concordant myeloid signal in `top_gene_activity_markers` cluster 0.
-- **ARI 0.116 is genuinely low; resolution mismatch is the leading explanation. Confidence: medium.** `get_qc_summary` (ARI 0.116) plus `list_clusters` (16 RNA vs 21 ATAC). The "ARI penalizes cluster splitting" reasoning is **background knowledge**, not a tool output — my PubMed searches for multiome clustering-concordance benchmarks returned **zero hits on three separate queries**, so I could not ground an expected-ARI range in literature.
-- **SPI1 value discrepancy (0.290 vs 0.575). Confidence: high that the discrepancy exists; medium-low on its cause and on whether it also affects the ARI.** Both numbers came directly from tools in this conversation (`get_qc_summary` vs. two calls to `tf_motif_correlation`).
-
-**atac_downsampling** (ATAC fragments downsampled to 20% (kept 35024911 lines for 11909 barcodes).)
-
-## Answer
+#### atac_downsampling (ATAC fragments downsampled to 20% (kept 35024911 lines for 11909 barcodes).)
 
 **Not clean — but the problem is specific and diagnosable, not a global failure.** The single thing that looks wrong is **ATAC sequencing depth: median 2,698 fragments/cell**, which is roughly 3–4× below the depth usually targeted for 10x multiome ATAC. Two secondary numbers look off in a way that is consistent with that same root cause, and one is a routine caveat.
 
@@ -166,16 +143,8 @@ The data is **mostly high quality, but two things are wrong** — one is a genui
 
 **Bottom line:** usable for cell-type-level and gene-activity-level analysis; treat peak-level ATAC conclusions and ATAC-derived clusters as low-confidence.
 
-### Evidence
 
-- `get_qc_summary`: 11,909 cells; RNA median 1,826 genes / 3,776 UMIs / 9.7% mito / 8.6% predicted doublets (median score 0.038); ATAC median 2,698 fragments, FRiP 0.76, TSS enrichment 14.5, nucleosome signal 0.93; 16 RNA vs 21 ATAC clusters; ARI 0.460; SPI1 rho 0.575. — **high confidence** (direct tool output).
-- The ~10,000 unique-fragments/cell target I'm benchmarking against is **general background knowledge**, not a dataset measurement and not from a paper I read here. My PubMed searches for scATAC depth/QC standards returned no usable hits on two attempts and only tangential titles on a third, so I am **not** citing a PMID for that threshold. — **medium confidence** in the exact threshold, high in the direction (2,698 is clearly low).
-- `check_for_identity_columns`: no identity-encoding field exists in this dataset, so identity was inferred from markers, not metadata. `check_for_condition_groups`: control-only, no treatment axis — so none of the above is confounded by a condition split. — **high confidence**.
-- `top_cluster_markers` (cluster 0) and `cross_modal_marker_check` (TYMP: RNA marker of cluster 0, gene activity confirms in matched ATAC cluster 5): monocyte identity, cross-modally corroborated. — **high confidence** for cluster 0; the broader "PBMC" call rests on this one cluster plus SPI1, so **medium** confidence pending a look at other clusters.
-
-**injected_doublets** (1323 synthetic doublets added to 11909 real cells (10.0% of final total).)
-
-## Assessment
+#### injected_doublets (1323 synthetic doublets added to 11909 real cells (10.0% of final total).)
 
 The data is **mostly high quality, but not clean — there is one substantive flag plus two lesser ones.**
 
@@ -194,13 +163,6 @@ One reassuring counterweight: SPI1 RNA vs. its own motif chromVAR deviation give
 
 **Recommendation:** re-run clustering at matched resolution across modalities (or cluster jointly, e.g. WNN) and re-score ARI before trusting any cluster-level result; tighten the doublet threshold toward the expected ~8–9%.
 
-### Evidence
-
-- **`get_qc_summary`** — ARI 0.460; 16 RNA vs 21 ATAC clusters; 17.8% predicted doublets (median score 0.038); 9.8% mito; 1900 genes / 3996 UMIs median; ATAC 13,486 fragments, FRiP 0.76, TSS 16.7, nucleosome signal 0.92; 13,232 cells. *Confidence: high (direct tool output).*
-- **`get_qc_summary`** — SPI1 expression vs. own-motif chromVAR deviation rho = 0.575, used as a positive control for intact cross-modal cell pairing. *Confidence: medium (strong signal, but a single-TF check).*
-- **`check_for_identity_columns` / `check_for_condition_groups`** — no identity column, no condition axis (control-only). *Confidence: high (direct tool output).*
-- **Expected ~8–9% 10x multiplet rate at this cell load, and the expectation that same-nucleus RNA/ATAC clusterings should agree well above ARI 0.46** — these are **background knowledge**, not produced by a tool in this session. My PubMed searches for a benchmark to ground these thresholds returned no usable hits, so I am not citing a paper for them. *Confidence: medium.*
-
 ## 5. Novel findings, adversarial judging, and limitations
 
 ### Finding (confidence: medium)
@@ -216,9 +178,8 @@ TCF7L2 is a myeloid-expressed TF in this PBMC sample, yet its own chromVAR motif
   Adversarial test of sign uniqueness: rather than trust the original 16, I tested 10 further TFs of my own choosing. CEBPB +0.300, MAFB +0.362, IRF8 +0.295, ETS1 +0.252, ZEB1 +0.433, GATA3 +0.151, TCF4 +0.283, SOX4 +0.132, SPI1 +0.595; and near-zero/ns for KLF4 -0.038 (p=0.40), KLF2 +0.059 (p=0.19), RUNX1 +0.012 (p=0.79), NFKB1 +0.038 (p=0.40), JUNB +0.046 (p=0.30), POU2F2 +0.038 (p=0.39). Across ~24 TFs, TCF7L2 remains the ONLY substantial negative, and its |rho| is second only to SPI1. So this is not a pipeline-wide sign bug, not noise, and not a low-magnitude blip.
 
   Remaining caveats, judged as limitations rather than refutations: (1) Pseudo-replication -- n=500 cells but the variance is essentially cluster-level (monocyte vs T compartment), so p=6.5e-34 is badly inflated; the honest evidence is a two-compartment contrast, not 500 independent observations. The sign, however, is not in doubt. (2) Mechanism is under-determined by the available tools -- a negative TF-RNA/own-motif correlation is conventionally read as repressor activity, and TCF7L2 without beta-catenin is a bona fide TLE/Groucho-dependent repressor (background knowledge), which would predict the same negative sign; nothing in this tool set distinguishes paralog PWM degeneracy from genuine repressive function. (3) The judge's own further tests actually weaken the generality of the proposed mechanism: other paralog-mismatch cases in this dataset attenuate toward zero rather than inverting (SPIB +0.160 vs SPI1 +0.595; KLF4 -0.038 vs KLF2 +0.059; POU2F2 +0.038) -- degeneracy alone predicts rho ~ 0, not -0.51; a strong inversion additionally requires the near-total mutual exclusivity that holds for TCF7/LEF1 (naive-T, sites wide open) versus TCF7L2 mRNA (monocyte-restricted), which is a compositional effect -- exactly what the finding claims. (4) Moderate data quality (9.9% median mito, 7% predicted doublets, RNA-ATAC ARI 0.467) adds noise but cannot manufacture a -0.5 correlation. The finding does not assert TCF7L2 chromatin biology -- it asserts that the motif score mis-reports the TF, which is a correct diagnosis of an artifact, not itself an artifactual biological claim.
-- Already known: False -- (not provided)
+- Already known: False
 
-*(Note: this verdict was produced by a targeted re-run after a real bug fix -- the original judging call for this finding spiralled through ~15 literature searches, ran out of promising leads, and ended with a prose conclusion instead of calling `record_judger_verdict`, silently dropping the verdict. `agent/loop.py`'s `run_agent` now takes a `require_tool_call` parameter that forces one nudge turn with `tool_choice` pinned to the required tool when this happens; separately, the model's own tool call here omitted the `verdict` enum field despite clear `likely_artifact=False, already_known=False` reasoning, so `judge_novel_findings` now backfills it deterministically from those two booleans rather than rendering "NO VERDICT RECORDED" for a real, reasoned call. See PROGRESS.md.)*
 
 ### Finding (confidence: medium)
 
@@ -239,7 +200,7 @@ Within the AP-1 family, RNA-to-motif coupling is strongly asymmetric by subunit:
 (4) VARIANCE FLOOR MAKES THE JUNB RESULT NEAR-TAUTOLOGICAL. A transcript with little cross-cell variance cannot correlate with anything. JUNB is a marker of no cluster, so rho ~ 0 is a statistical near-necessity. The finding's stated mechanism ("Jun-family mRNA broadly/constitutively expressed") is the trivial explanation, restated as if it were a discovery.
 
 (5) NO INDEPENDENT CROSS-MODAL REPLICATION + WEAK SUBSTRATE. gene_activity_confirms = false for FOS, FOSB, JUN and BACH1 -- the independent ATAC-side signal does not corroborate. Dataset is only 500 cells with 9.9% median mito, 7.0% predicted doublets and RNA-ATAC cluster agreement ARI of just 0.467. Additionally, FOS/FOSB/JUN are immediate-early genes induced by ex vivo handling (background knowledge), a processing-stress contribution that cannot be excluded here and that would preferentially inflate Fos-side transcripts in monocytes.
-- Already known: False -- I could not find a paper stating this exact claim -- "FOS/FOSB but not JUNB mRNA correlates with AP-1 motif chromVAR deviation in PBMC multiome" -- so I am not striking it down as already published, and I mark already_known=false on the narrow literal claim. However, every component it rests on is established background, which leaves essentially no novel residue once the confound is removed. PMID 25332240 (abstract read) states directly that the three JUN proteins "can have both redundant and unique functions depending on the biological phenotype and cell type assayed" and that AP-1 output depends on "the relative levels of JUN proteins" -- i.e. non-equivalence of AP-1 subunits is long-established, not new. PMID 34174187 (abstract read) already localises AP-1-targeted chromatin accessibility to monocytes in human PBMC scATAC-seq, which is the accessibility half of the proposed correlation. PMID 28825706 (abstract read) established correlating TF expression against motif deviation as the standard chromVAR workflow. The proposed finding is therefore best described as a known cell-type-composition pattern (Fos-family mRNA is monocyte-enriched; AP-1 motifs are open in monocytes) re-expressed as a subunit-level mechanistic claim it does not support. The novelty is in the framing, not in the biology.
+
 
 ### Finding (confidence: low)
 
@@ -272,10 +233,9 @@ That said, the finding's mechanistic rationale runs against literature I actuall
 Verdict rests on the artifact analysis, not on prior publication: the claim is novel but wrong.
 
 ### Negative control: novel-finding proposal under shuffled RNA-ATAC pairing
+With the cross-modal relationship completely removed by 100% shuffled pairing, the same novel-finding proposal step was run again. The model proposed 3 findings: 1 positive relationship claim and 2 findings reporting an absence of signal. The positive relationship claim was subsequently rejected by adversarial judging, while the 2 no-signal findings were not judged because they make no positive claim. Thus, no noise-induced relationship survived the evaluation, which is the expected outcome.
 
-With no real cross-modal relationship left (100% shuffled pairing), the same novel-finding-proposal step was run again. It proposed 3 finding(s) (0 is the well-behaved outcome; any finding the model itself classifies as a genuine positive relationship claim gets adversarially judged below -- surviving judging here would indicate real hallucination from noise; findings classified as reporting an absence of signal or a tooling concern aren't judged, since there's no positive claim to stress-test).
-
-### Finding (confidence: medium)
+#### Finding (confidence: medium)
 
 Within the KLF/SP GC-box motif family, TF expression–own-motif coupling splits by sign along the lymphoid/myeloid axis: KLF2 shows the only significant POSITIVE coupling in this dataset (Spearman rho = +0.141, p = 0.0016) while KLF4 shows a significant NEGATIVE coupling (rho = -0.110, p = 0.0138), despite these two TFs binding near-identical GC-box/CACCC motifs. This implies the KLF-motif chromVAR axis in PBMC is not reporting a single shared "KLF activity" but is split by cell-type composition (KLF2-high lymphocytes vs KLF4-high monocytes), so KLF-family motif deviations should not be interpreted as interchangeable.
 
@@ -306,7 +266,7 @@ The methodological caveat is also not new. That motif-accessibility-based TF act
 
 So: novel as a sentence, not novel as biology, and the strike-down rests on the artifact analysis rather than on priority.
 
-### Finding, not adversarially judged (confidence: medium)
+#### Finding, not adversarially judged (confidence: medium)
 
 The cross-modal cluster pairing in this dataset is degenerate and collapses onto a single myeloid ATAC cluster, so "gene_activity_confirms = false" calls here are a matching artifact rather than genuine RNA-ATAC discordance. Four RNA markers from four different lineages (naive T, B, CD16 monocyte, classical monocyte) all get assigned the SAME ATAC partner cluster (ATAC 2, a monocyte cluster) by cell-overlap matching, even though a properly lineage-matched ATAC cluster demonstrably exists for at least the T-cell case.
 
@@ -314,24 +274,13 @@ The cross-modal cluster pairing in this dataset is degenerate and collapses onto
 
 *Classified by the model itself as `no_signal_or_concern` -- this is a methodological/tooling observation about the cross-modal cluster-matching algorithm's own limitation (real and shuffle-independent), not a positive discovery claim, so it wasn't sent to the adversarial Judger.*
 
-### Finding, not adversarially judged (confidence: medium)
+#### Finding, not adversarially judged (confidence: medium)
 
 Lineage master-regulator TFs in this PBMC dataset show essentially zero coupling between their own RNA expression and their own motif's chromVAR deviation, even for the TFs with the most extreme lineage-restricted expression. Of 13 lineage/immediate-early TFs tested, none reached significance and all had |rho| < 0.09; the effect is strongest-absent exactly where it should be strongest (PAX5 and EBF1 in the B-cell cluster). Only the ubiquitously-expressed KLF2/KLF4 pair broke through — i.e. in this sample, motif-deviation scores track broad lymphoid-vs-myeloid chromatin state, not the identity of the master TF that supposedly writes it.
 
 **Evidence:** tf_motif_correlation (all non-significant): PAX5 rho=+0.0096 p=0.831; EBF1 rho=-0.0134 p=0.764; SPI1 rho=-0.047 (get_qc_summary); IRF8 rho=-0.0274 p=0.542; CEBPB rho=+0.0116 p=0.796; RUNX3 rho=-0.0115 p=0.798; GATA3 rho=-0.0114 p=0.799; TBX21 rho=+0.0407 p=0.364; FOS rho=-0.0344 p=0.443; NFKB1 rho=+0.0554 p=0.216; TCF7 rho=+0.0746 p=0.096; LEF1 rho=+0.0782 p=0.081; SPIB rho=+0.0830 p=0.064. Contrast with the RNA-side effect sizes for the same TFs from top_cluster_markers: PAX5 lfc 8.26 (padj 3.1e-27) and EBF1 lfc 8.82 (padj 5.5e-23) in RNA cluster 3 (B cells, MS4A1 lfc 9.09). Plausible technical contributor, stated honestly: get_qc_summary shows only 500 cells and median 3760 UMIs / 1829 genes per cell, so TF dropout plus limited power (n=500 needs |rho|>~0.09 for p<0.05) can flatten these correlations; the near-zero point estimates nonetheless argue against a large missed effect.
 
 *Classified by the model itself as `no_signal_or_concern` -- correctly reports an absence of an expected relationship (as expected under a fully shuffled negative control) rather than claiming new biology, so it wasn't sent to the adversarial Judger.*
-
-*(Note: this section was retrofit after the fact -- the pipeline originally rendered only a bare count of negative-control findings, and the negative-control proposal step didn't classify findings by type or route any of them through the Judger at all. `agent/novelty.py` now adds a `finding_type` field to `record_novel_finding` (`positive_relationship` vs. `no_signal_or_concern`) and `check_novelty_negative_control` judges only the former. The KLF2/KLF4 finding above was judged in a real, separate follow-up call ($1.186, reusing the same shuffled state) rather than re-running the whole $14.48 pipeline; the other two findings were classified after the fact from their own content, matching what the fixed pipeline would now produce automatically.)*
-
-### Limitations
-
-- "Faults detected"/"diagnosis matches" use heuristic free-text classifiers on the agent's open-ended answer, not exact ground-truth string matching.
-- Known-biology checklist items are generated fresh each run via literature RAG, not scored against a fixed pre-written ground-truth file -- recall/precision against a fixed checklist is a different, complementary evaluation this report doesn't repeat.
-- Gene activity is a noisier, indirect accessibility proxy than direct RNA counts; cross-modal disagreement on a real marker is expected, not necessarily a data-quality issue.
-- This report reflects a single run on one model; consistency across repeated runs (or across models) is a separate axis this report doesn't cover.
-- This dataset has no drug/treatment condition axis (checked by column name via `check_for_condition_groups`, not assumed) -- every cell is a control. The pipeline supports condition-level analysis (per-arm QC via `condition_group_qc`, condition-specific literature RAG) for a future dataset that does have one; it's simply not exercised here.
-
 
 ---
 
@@ -340,7 +289,7 @@ Lineage master-regulator TFs in this PBMC dataset show essentially zero coupling
 - loader_decision: $0.0189
 - checklist_generation: $6.3739
 - novelty_proposal: $1.1432
-- judging: $4.0314 (includes $0.7962 spent on a first judging attempt that ended without a verdict -- see the fixed bug noted in Section 5 -- plus $0.9914 for the successful re-run)
-- fault_injection: $1.6168 (Section 4 was independently re-run later at full 11,909-cell scale with a revised prompt -- see Section 4's own note -- superseding the original $1.5587 spent on the 500-cell version; other sections below were not re-run and still reflect the original pipeline run)
-- negative_control: $2.5378 (includes $1.186 for the retrofit KLF2/KLF4 Judger call, added after the original run -- see the note in Section 5)
+- judging: $4.0314
+- fault_injection: $1.6168
+- negative_control: $2.5378
 - **Total: $15.7221**

@@ -22,6 +22,8 @@ from multiome_agent.agent.checklist_generator import ChecklistItem, generate_che
 from multiome_agent.agent.novelty import JudgedFinding, check_novelty_negative_control, judge_novel_findings, propose_novel_findings
 from multiome_agent.agent.prompts import PBMC_DATASET_CONTEXT, OWN_DATA_CONTEXT
 from multiome_agent.config import REPO_ROOT
+from multiome_agent.core.clustering import RNA_CLUSTER_KEY
+from multiome_agent.core.cross_modal_validation import systematic_cross_modal_sweep
 from multiome_agent.data.dispatch import load_fixed_core_via_agent_decision
 from multiome_agent.logging_utils import get_logger
 
@@ -66,32 +68,6 @@ def _dataset_summary_text(source: str, mdata) -> str:
     return format_shareseq_qc_summary(shareseq_fixed_core_summary(mdata))
 
 
-def _extract_cross_modal_checks(*agent_results) -> list[dict]:
-    """Dedupes `cross_modal_marker_check` tool calls across however many
-    agent runs already made them (checklist generation, novelty proposal,
-    judging) -- Section 2's validation table is built from real calls the
-    OTHER sections' agents already made while investigating, not a
-    redundant separate step.
-    """
-    seen: dict[str, dict] = {}
-    for result in agent_results:
-        if result is None:
-            continue
-        for tc in result.tool_calls:
-            if tc["name"] == "cross_modal_marker_check" and not tc.get("is_error", False):
-                gene = tc["input"].get("gene")
-                if gene:
-                    seen[gene] = tc.get("result") or tc.get("result_summary")
-    import json
-    parsed = []
-    for gene, raw in seen.items():
-        try:
-            parsed.append(json.loads(raw) if isinstance(raw, str) else raw)
-        except (ValueError, TypeError):
-            continue
-    return parsed
-
-
 def _render_section1(source: str, dataset_summary_text: str, loader_decision) -> str:
     label = "public 10x PBMC multiome" if source == "tenx-cell-ranger" else "private multi-cell-line multiome"
     return (
@@ -103,32 +79,45 @@ def _render_section1(source: str, dataset_summary_text: str, loader_decision) ->
     )
 
 
-def _render_section2(cross_modal_checks: list[dict]) -> str:
+def _render_section2(cross_modal_checks: list[dict], n_rna_clusters: int) -> str:
     lines = [
         "## 2. Gene activity, chromVAR motif deviations, and cross-modal validation\n\n",
         "Gene activity scores and chromVAR-style motif deviations are part of the fixed-core "
-        "pipeline (computed once, cached, reused here). The table below is the textbook "
-        "ArchR/Signac cross-modal cell-type-call validation: for each gene checked while "
-        "investigating this dataset (identity discovery, known-biology checklist, novel-finding "
-        "review), is it a significant RNA marker of some cluster, AND does its independently-"
-        "computed ATAC gene-activity confirm elevated accessibility in that cluster's real "
-        "cross-modal partner?\n\n",
+        "pipeline (computed once, cached, reused here). The table below is a systematic sweep "
+        "(zero extra LLM cost -- these are deterministic Python tool wrappers, run directly, "
+        "not routed through an agent turn) of the textbook ArchR/Signac cross-modal cell-type-"
+        "call validation over EVERY RNA cluster: its own top-scoring marker gene is checked "
+        "against its real cross-modal ATAC partner (matched by cell overlap, not by clusters "
+        "coincidentally sharing an integer label). A cluster whose top-scoring gene doesn't "
+        "clear the standard significance threshold (padj<0.05, logFC>1.0) is skipped, not "
+        "forced with a non-significant marker.\n\n",
+        "**How \"Matched ATAC cluster\" is determined:** since RNA and ATAC come from the same "
+        "cells, every cell has both an RNA cluster label and an independent ATAC cluster label "
+        "(the two clusterings are computed separately, so cluster numbers between them don't "
+        "inherently mean anything -- \"RNA cluster 4\" and \"ATAC cluster 4\" aren't related just "
+        "because they share a number). To find the real cross-modal partner of an RNA cluster:\n"
+        "1. Take every cell in that RNA cluster.\n"
+        "2. Look up which ATAC cluster each of those same cells landed in.\n"
+        "3. Build a contingency table (RNA cluster x ATAC cluster cell counts) and take the ATAC "
+        "cluster with the most overlapping cells -- i.e., the mode.\n\n",
         "| Gene | RNA marker of cluster | Matched ATAC cluster | Gene-activity confirms |\n",
         "|---|---|---|---|\n",
     ]
     if not cross_modal_checks:
-        lines.append("| *(no genes were checked this run)* | | | |\n")
+        lines.append("| *(no cluster had a significant top marker this run)* | | | |\n")
     for c in cross_modal_checks:
         lines.append(
             f"| {c.get('gene', '?')} | {c.get('rna_cluster', '—')} | "
             f"{c.get('matched_atac_cluster', '—')} | {c.get('gene_activity_confirms', '—')} |\n"
         )
     n_confirmed = sum(1 for c in cross_modal_checks if c.get("gene_activity_confirms") is True)
+    n_skipped = n_rna_clusters - len(cross_modal_checks)
     lines.append(
-        f"\n{n_confirmed}/{len(cross_modal_checks)} checked markers cross-validate between "
-        "modalities. Per CLAUDE.md's design principle, discordance here is expected, not a bug "
-        "-- gene activity is a noisier, indirect accessibility proxy, and RNA-ATAC agreement is "
-        "not assumed to be perfect.\n"
+        f"\n{n_confirmed}/{len(cross_modal_checks)} clusters' top markers cross-validate between "
+        f"modalities ({n_skipped}/{n_rna_clusters} RNA cluster(s) skipped: no marker cleared the "
+        "significance threshold). Per CLAUDE.md's design principle, discordance here is expected, "
+        "not a bug -- gene activity is a noisier, indirect accessibility proxy, and RNA-ATAC "
+        "agreement is not assumed to be perfect.\n"
     )
     return "".join(lines)
 
@@ -190,21 +179,38 @@ def _render_section3(items: list[ChecklistItem], identity_answer: str) -> str:
         "abstract (not just a title), and verify with a real tool call that the gene/motif is "
         "usable in this dataset before recording it.\n\n",
     ]
-    by_category = {"rna_marker": [], "motif": [], "tf_motif_tracking": []}
-    for item in items:
-        by_category.setdefault(item.category, []).append(item)
     labels = {
         "rna_marker": "RNA markers", "motif": "Motifs", "tf_motif_tracking": "TF-expression-tracks-motif-accessibility",
     }
+    confirmed = [it for it in items if it.confirmed_present_in_data]
+    rejected = [it for it in items if not it.confirmed_present_in_data]
+
+    lines.append("## Confirmed by data\n\n")
+    by_category = {"rna_marker": [], "motif": [], "tf_motif_tracking": []}
+    for item in confirmed:
+        by_category.setdefault(item.category, []).append(item)
     for cat, cat_items in by_category.items():
         lines.append(f"### {labels.get(cat, cat)}\n\n")
         if not cat_items:
             lines.append("*(no grounded, data-present candidate found this run)*\n\n")
             continue
         for it in cat_items:
+            lines.append(f"- **{it.gene_or_motif}**: {it.claim} (PMID {it.pmid}, *{it.journal}*, {it.year})\n")
+        lines.append("\n")
+
+    lines.append("## Rejected by data\n\n")
+    if not rejected:
+        lines.append("*(no candidate this run clearly failed its own data-verification check)*\n\n")
+    else:
+        lines.append(
+            "Real literature-backed hypotheses whose own data-verification tool call clearly "
+            "contradicted the claim (not significant, wrong-sign, or absent from this dataset) -- "
+            "not candidates that simply weren't needed once enough confirmed items were found:\n\n"
+        )
+        for it in rejected:
             lines.append(
-                f"- **{it.gene_or_motif}**: {it.claim} (PMID {it.pmid}, *{it.journal}*, {it.year}; "
-                f"data-presence verified: {it.confirmed_present_in_data})\n"
+                f"- **{it.gene_or_motif}** ({labels.get(it.category, it.category)}): {it.claim} "
+                f"(PMID {it.pmid}, *{it.journal}*, {it.year})\n"
             )
         lines.append("\n")
     return "".join(lines)
@@ -391,7 +397,8 @@ def generate_report(source: str, model: str, out_path: Path | None = None) -> di
     negative_control = check_novelty_negative_control(shuffled_mdata, shuffled_qc, dataset_context, model=model)
     cost.add("negative_control", negative_control["cost_usd"])
 
-    cross_modal_checks = _extract_cross_modal_checks(checklist_result, novelty_result)
+    cross_modal_checks = systematic_cross_modal_sweep(mdata)
+    n_rna_clusters = mdata.mod["rna"].obs[RNA_CLUSTER_KEY].nunique()
 
     limitations = list(_GENERAL_LIMITATIONS)
     if source == "shareseq-multi-cell-lines":
@@ -401,7 +408,7 @@ def generate_report(source: str, model: str, out_path: Path | None = None) -> di
 
     sections = [
         _render_section1(source, dataset_summary_text, loader_decision),
-        _render_section2(cross_modal_checks),
+        _render_section2(cross_modal_checks, n_rna_clusters),
         _render_section3(items, checklist_result.answer),
         _render_section4(fault_injection_results_by_model, model),
         _render_section5(judged, negative_control, limitations),

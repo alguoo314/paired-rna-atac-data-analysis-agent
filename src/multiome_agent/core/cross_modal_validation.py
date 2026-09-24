@@ -17,7 +17,12 @@ import scanpy as sc
 from anndata import AnnData
 from mudata import MuData
 
-from multiome_agent.core.clustering import ATAC_CLUSTER_KEY, RNA_CLUSTER_KEY, gene_is_significant_marker_of_cluster
+from multiome_agent.core.clustering import (
+    ATAC_CLUSTER_KEY,
+    RNA_CLUSTER_KEY,
+    gene_is_significant_marker_of_cluster,
+    top_rna_cluster_markers,
+)
 
 
 def best_matching_atac_cluster(mdata: MuData, rna_cluster: str) -> str:
@@ -82,3 +87,34 @@ def cross_modal_marker_validation(mdata: MuData, gene: str) -> dict:
         "gene": gene, "is_rna_marker": True, "rna_cluster": rna_cluster,
         "matched_atac_cluster": atac_cluster, "gene_activity_confirms": confirms,
     }
+
+
+def systematic_cross_modal_sweep(mdata: MuData) -> list[dict]:
+    """The same validation as `cross_modal_marker_validation`, but run
+    systematically over EVERY RNA cluster rather than one caller-chosen gene
+    at a time -- unbiased coverage of the whole clustering instead of
+    whichever genes another step happened to investigate. For each RNA
+    cluster, takes its own top-scoring marker gene (by `rank_genes_groups`)
+    and checks it specifically against THAT cluster (not
+    `cross_modal_marker_validation`'s generic "first cluster this gene is
+    significant in" search, which could in principle land on a different
+    cluster than the one being swept). A cluster whose top-scoring gene
+    doesn't clear the standard significance threshold is skipped outright --
+    reported as absent, not forced with a non-significant marker.
+    """
+    rna = mdata.mod["rna"]
+    rows = []
+    for cluster in rna.obs[RNA_CLUSTER_KEY].cat.categories:
+        top = top_rna_cluster_markers(rna, cluster, n=1)
+        if not top:
+            continue
+        gene = top[0]["gene"]
+        if not gene_is_significant_marker_of_cluster(rna, gene, cluster):
+            continue
+        atac_cluster = best_matching_atac_cluster(mdata, cluster)
+        confirms = gene_activity_is_significant_marker_of_cluster(mdata.mod["atac"], gene, atac_cluster)
+        rows.append({
+            "gene": gene, "rna_cluster": cluster,
+            "matched_atac_cluster": atac_cluster, "gene_activity_confirms": confirms,
+        })
+    return rows

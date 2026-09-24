@@ -59,6 +59,26 @@ def test_propose_novel_findings_zero_is_fine():
     assert findings == []
 
 
+def test_propose_novel_findings_caps_positive_relationship_at_three():
+    # Real run motivation: the model is asked to try up to 6 candidates but
+    # stop recording after 3 that survive self-rejection -- don't trust that
+    # discipline alone, cap deterministically. no_signal_or_concern findings
+    # aren't judged downstream, so they're never capped.
+    fake = _FakeResult(tool_calls=[
+        _finding_call("F1", "ev1", "high"),
+        _finding_call("F2", "ev2", "high"),
+        _finding_call("F3", "ev3", "medium"),
+        _finding_call("F4", "ev4", "low"),
+        _finding_call("F5", "ev5", "low", finding_type="no_signal_or_concern"),
+    ])
+    with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
+        findings, _ = propose_novel_findings(mdata=object(), qc_summary="qc", dataset_context="ctx")
+    positive = [f for f in findings if f["finding_type"] == "positive_relationship"]
+    assert len(positive) == 3
+    assert [f["finding"] for f in positive] == ["F1", "F2", "F3"]
+    assert any(f["finding"] == "F5" for f in findings)
+
+
 def test_judge_novel_findings_pairs_verdict_with_original_finding():
     findings = [{"finding": "A", "evidence": "ev-A", "confidence": "high"}]
     fake = _FakeResult(tool_calls=[_verdict_call("struck_down", already_known=True)])

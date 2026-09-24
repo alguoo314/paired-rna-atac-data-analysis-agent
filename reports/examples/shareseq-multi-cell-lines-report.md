@@ -1,299 +1,295 @@
-# Multiome QC & Hypothesis Agent report (private)
+# Multiome QC & Hypothesis Agent report (10x PBMC)
 
-*Model: `claude-opus-5` · total cost: $42.3547*
+*Model: `claude-opus-5` · total cost: $15.6640*
 
 ## 1. Dataset & fixed-core summary
 
-**Data source:** private multi-cell-line multiome data. Loading strategy was determined by the agent itself from real file structure, not pre-specified: it decided `separate_per_modality_files` -- "No file has a feature_types column mixing "Gene Expression" and "Peaks"; instead the modalities are split across files sharing the same 5,814 obs: two gene-expression matrices (19,129 and 3,697 vars, with gene-specific var columns like mt/ribo/hb/highly_variable/binomial_deviance) and one chromatin-accessibility matrix (1,578,279 vars with only an index column, plus ATAC-specific obs fields such as frip, n_fragment, tsse, frac_mito)."
+**Data source:** public 10x PBMC multiome data. Loading strategy was determined by the agent itself from real file structure, not pre-specified: it decided `combined_single_file` -- "Inspection of the single provided path shows a 10x Cell Ranger h5 with 11,909 obs × 144,978 vars whose feature_types_present list includes both "Gene Expression" and "Peaks", meaning RNA and ATAC modalities are stored together in this one file."
 
-5814 cells pooled from 8 distinct cell lines, 19129 genes, 133743 ATAC peaks (after feature filtering). RNA: 14 Leiden clusters, median 4258 genes/cell, 9296 UMIs/cell, 7.0% mito, 10.6% doublets (scrublet-based call). ATAC: 10 Leiden clusters, median 8484 fragments/cell, median FRiP 0.62, median TSS enrichment 14.6. RNA-ATAC cross-modal cluster agreement (ARI): 0.725. Recovery of true (genotype-confirmed) cell-line identity from unsupervised clustering (ARI vs. ground truth): RNA=0.767, ATAC=0.906. chromVAR-style motif accessibility deviations are available for this dataset -- use the tf_motif_correlation tool to check a specific transcription factor's expression against its own motif's accessibility.
+11909 cells, 26349 genes, 107385 ATAC peaks (after feature filtering). RNA: 16 Leiden clusters, median 1826 genes/cell, 3776 UMIs/cell, 9.7% mito, 8.6% predicted doublets (median doublet_score 0.038). ATAC: 21 Leiden clusters, median 13486 fragments/cell, median FRiP 0.76, median TSS enrichment 16.7, median nucleosome signal 0.92. RNA-ATAC cluster agreement (ARI): 0.460. SPI1 expression vs. its own motif's chromVAR deviation (Spearman rho): 0.575.
 
 ---
 
 ## 2. Gene activity, chromVAR motif deviations, and cross-modal validation
 
-Gene activity scores and chromVAR-style motif deviations are part of the fixed-core pipeline (computed once, cached, reused here). The table below is the textbook ArchR/Signac cross-modal cell-type-call validation: for each gene checked while investigating this dataset (identity discovery, known-biology checklist, novel-finding review), is it a significant RNA marker of some cluster, AND does its independently-computed ATAC gene-activity confirm elevated accessibility in that cluster's real cross-modal partner?
+Gene activity scores and chromVAR-style motif deviations are part of the fixed-core pipeline (computed once, cached, reused here). The table below is a systematic sweep (zero extra LLM cost -- these are deterministic Python tool wrappers, run directly, not routed through an agent turn) of the textbook ArchR/Signac cross-modal cell-type-call validation over EVERY RNA cluster: its own top-scoring marker gene is checked against its real cross-modal ATAC partner (matched by cell overlap, not by clusters coincidentally sharing an integer label). A cluster whose top-scoring gene doesn't clear the standard significance threshold (padj<0.05, logFC>1.0) is skipped, not forced with a non-significant marker.
+
+**How "Matched ATAC cluster" is determined:** since RNA and ATAC come from the same cells, every cell has both an RNA cluster label and an independent ATAC cluster label (the two clusterings are computed separately, so cluster numbers between them don't inherently mean anything -- "RNA cluster 4" and "ATAC cluster 4" aren't related just because they share a number). To find the real cross-modal partner of an RNA cluster:
+1. Take every cell in that RNA cluster.
+2. Look up which ATAC cluster each of those same cells landed in.
+3. Build a contingency table (RNA cluster x ATAC cluster cell counts) and take the ATAC cluster with the most overlapping cells -- i.e., the mode.
 
 | Gene | RNA marker of cluster | Matched ATAC cluster | Gene-activity confirms |
 |---|---|---|---|
-| ESR1 | 4 | 4 | True |
-| GREB1 | 4 | 4 | True |
-| GRHL2 | 4 | 4 | True |
-| PGR | 4 | 4 | True |
-| PRLR | 4 | 4 | True |
-| TRPS1 | 4 | 4 | True |
+| SLC8A1 | 0 | 5 | True |
+| DPYD | 1 | 5 | True |
+| FCGR3A | 2 | 2 | False |
+| CCL5 | 3 | 3 | True |
+| GNLY | 4 | 4 | True |
+| FHIT | 5 | 10 | True |
+| INPP4B | 6 | 8 | True |
+| LEF1 | 7 | 9 | True |
+| LYZ | 8 | 0 | True |
+| BANK1 | 9 | 16 | True |
+| CST3 | 10 | 14 | True |
+| SOX4 | 11 | 17 | False |
+| PLXDC2 | 12 | 15 | False |
+| RALGPS2 | 13 | 16 | True |
+| TCF4 | 15 | 19 | True |
 
-6/6 checked markers cross-validate between modalities. Per CLAUDE.md's design principle, discordance here is expected, not a bug -- gene activity is a noisier, indirect accessibility proxy, and RNA-ATAC agreement is not assumed to be perfect.
+12/15 clusters' top markers cross-validate between modalities (1/16 RNA cluster(s) skipped: no marker cleared the significance threshold). Per CLAUDE.md's design principle, discordance here is expected, not a bug -- gene activity is a noisier, indirect accessibility proxy, and RNA-ATAC agreement is not assumed to be perfect.
 
 ---
 
 ## 3. Known-biology checklist (literature RAG, identity determined by the agent)
 
-**Identity determination:** **This is not a tissue sample — it's a pooled panel of 8 human cancer cell lines**, and the dataset's own `.obs` says so directly. Both the RNA and ATAC modalities carry a `cell_line_name` field plus DepMap Model IDs (`ACH-XXXXXX`), with a companion QC flag (`may_have_wrong_cell_line_label_*` = "no" for all 5,814 cells):
+**Identity determination:** **Human PBMCs (peripheral blood mononuclear cells), healthy/untreated, one donor-level sample **
 
-| Cell line | DepMap ID | Cells (ATAC label) | Lineage (from `atac_lineage`) |
-|---|---|---|---|
-| NCI-H838 | ACH-000416 | 1,626 | Lung |
-| HCC-44 | ACH-000667 | 817 | Lung |
-| SJSA1 | ACH-000748 | 773 | Bone |
-| **T-47D** | **ACH-000147** | **697** | **Breast** |
-| OVTOKO | ACH-000663 | 627 | Ovary/Fallopian tube |
-| LN-229 | ACH-000595 | 579 | CNS/Brain |
-| YKG1 | ACH-000570 | 531 | CNS/Brain |
-| A-673 | ACH-000052 | 164 | Bone |...
+- `check_for_identity_columns` found **no** identity-encoding field (no cell-line/donor/DepMap "ACH-" column), so I fell back to marker-based inference.
+- `check_for_condition_groups` found **no** condition axis → treat as control-only; no drug/vehicle comparison is available.
+- Marker-based composition (8 RNA clusters): **c0** naive CD4 T (LEF1 +4.6, CCR7, TCF7, IL7R); **c5** memory/activated T (IL32, LTB); **c4** NK/cytotoxic (GNLY, NKG7, PRF1, KLRD1); **c3** B cells (MS4A1 +9.1, EBF1 +8.8, PAX5 +8.3, BANK1 +7.8, CD79A +7.0)
 
 Each item below required the agent to: search PubMed, fetch and actually read a real abstract (not just a title), and verify with a real tool call that the gene/motif is usable in this dataset before recording it.
 
+## Confirmed by data
+
 ### RNA markers
 
-- **ESR1**: ESR1 (ERα) is expressed in T-47D, an ERα-positive luminal breast cancer line; here ESR1 is a top RNA marker of the T-47D cluster (RNA cluster 4, logFC 5.01, padj 8.3e-245) with ATAC gene-activity confirmation. (PMID 27888136, *The Journal of steroid biochemistry and molecular biology*, 2017; data-presence verified: True)
-- **PGR**: T-47D is progesterone-receptor (PGR)-positive; here PGR is a top RNA marker of the T-47D cluster (RNA cluster 4, logFC 5.32, padj 6.3e-242) and is cross-modally confirmed by ATAC gene activity. (PMID 35617163, *PloS one*, 2022; data-presence verified: True)
-- **GREB1**: GREB1, a direct ER-regulated early-response gene, correlates with ER-positive phenotype across breast cancer cell lines and so should be enriched in T-47D; here GREB1 is a top RNA marker of the T-47D cluster (RNA cluster 4, logFC 4.85, padj 2.5e-219) with ATAC gene-activity confirmation. (PMID 11103799, *Cancer research*, 2000; data-presence verified: True)
+- **CD14**: CD14 is expressed/enriched in classical (CD14+CD16-) monocytes; here it is a significant RNA marker of monocyte cluster 1 (PMID 36713384, *Frontiers in Immunology*, 2022; data-presence verified: True)
+- **S100A8**: S100A8 (calprotectin subunit, with S100A9) is highly expressed by blood classical monocytes/myeloid cells; here S100A8 is a significant RNA marker of monocyte cluster 1 (PMID 32810439, *Cell*, 2020; data-presence verified: True)
+- **FCN1**: FCN1 (M-ficolin) mRNA is expressed in blood mononuclear phagocytes/monocytes; here FCN1 is a significant RNA marker of monocyte cluster 1 (PMID 23944633, *Autoimmunity*, 2013; data-presence verified: True)
 
 ### Motifs
 
-- **MA0148.5.FOXA1**: The FOXA1 forkhead motif should show elevated chromatin accessibility in T-47D, since FOXA1 is a pioneer factor that exclusively initiates chromatin opening at its own genomic binding sites and is essential for growth of breast cancers; the FOXA1 motif (MA0148.5) is present in this dataset's chromVAR deviations. (PMID 41808995, *bioRxiv : the preprint server for biology*, 2026; data-presence verified: True)
-- **MA0037.5.Gata3**: The GATA3 motif should show elevated accessibility in luminal ER+ cells such as T-47D: GATA3 is a luminal-defining transcription factor whose motif accessibility marks the luminal chromatin landscape and is lost upon luminal-to-basal reprogramming; the GATA3 motif (MA0037.5) is present in this dataset's chromVAR deviations. (PMID 35021081, *Cell reports*, 2022; data-presence verified: True)
-- **MA0112.4.ESR1**: Estrogen response elements (the ESR1 motif) should be in accessible chromatin in T-47D: in T-47D cells specifically, chromatin accessibility at EREs is predictive of ER genomic binding and regulatory activity (with FOXA1 and GATA3 as the T-47D-specific predictive TFs); the ESR1 motif (MA0112.4) is present in this dataset's chromVAR deviations. (PMID 42469015, *Genome research*, 2026; data-presence verified: True)
+- **MA0080.7.Spi1 (PU.1)**: PU.1/SPI1 motif-containing regulatory elements should show elevated accessibility in monocyte/macrophage-lineage cells, since PU.1 is the myeloid lineage-determining factor that selects and activates the macrophage enhancer repertoire (PMID 25480297, *Cell*, 2014; data-presence verified: True)
+- **MA0466.4.CEBPB (C/EBPbeta)**: C/EBP-family motifs are enriched in the enhancer repertoire of peripheral monocytes, so CEBPB motif accessibility should be elevated in the monocyte compartment (PMID 40702585, *Genome Medicine*, 2025; data-presence verified: True)
+- **MA0476.2.FOS (AP-1)**: AP-1 (FOS/JUN) motifs mark enhancers established downstream of pro-inflammatory signalling in peripheral monocytes, so AP-1/FOS motif accessibility should be a feature of the monocyte compartment (PMID 40702585, *Genome Medicine*, 2025; data-presence verified: True)
 
 ### TF-expression-tracks-motif-accessibility
 
-- **FOXA1**: FOXA1 abundance should track accessibility at its own motif in breast cancer cells: acute pharmacological degradation of FOXA1 shows it exclusively initiates chromatin opening at its own genomic binding sites, so FOXA1 levels causally set FOXA1-motif accessibility. In this dataset FOXA1 RNA vs FOXA1 motif (MA0148.5) chromVAR deviation gives Spearman rho = 0.108, p = 2.0e-16. (PMID 41808995, *bioRxiv : the preprint server for biology*, 2026; data-presence verified: True)
-- **NR2F2**: NR2F2 expression level should track accessibility at NR2F2-bound/motif-containing ERalpha regulatory elements in ER+ breast cancer: perturbation of NR2F2 expression decreases ERalpha DNA binding and chromatin opening, and NR2F2 co-binds with FOXA1/GATA3 at 85% of ERalpha sites. In this dataset NR2F2 RNA vs its motif (MA1111.2) gives Spearman rho = -0.018, p = 0.18 (not significant). (PMID 31588232, *Theranostics*, 2019; data-presence verified: True)
-- **GATA3**: GATA3, a known pioneer factor in ER+ breast cancer that co-binds FOXA1/NR2F2 and renders ERE-containing sites pre-accessible, should have its expression track its own motif's accessibility. In this dataset GATA3 RNA vs GATA3 motif (MA0037.5) gives Spearman rho = -0.079, p = 2.0e-09 -- i.e. weakly negative rather than positive, so the expected tracking is not observed. (PMID 31588232, *Theranostics*, 2019; data-presence verified: True)
+- **SPI1**: PU.1/SPI1 protein concentration sets the affinity threshold for in vivo occupancy of PU.1 motifs within accessible chromatin during human macrophage differentiation, so SPI1 RNA level should track SPI1-motif accessibility in monocytes (observed Spearman rho = 0.595, p = 3.5e-49) (PMID 23658224, *Nucleic Acids Research*, 2013; data-presence verified: True)
+- **MAFB**: In monocytic cells, induction of MafB mRNA/protein increases MafB occupancy of MARE (Maf) motifs together with histone H4 acetylation indicating chromatin activation, so MAFB RNA should track MAFB-motif accessibility (observed Spearman rho = 0.362, p = 6.5e-17) (PMID 22820162, *Experimental Cell Research*, 2012; data-presence verified: True)
+- **CEBPA**: C/EBPalpha occupancy of macrophage/myeloid enhancers causes chromatin opening and activation of macrophage genes (with PU.1 redistribution), so CEBPA RNA level should track CEBPA-motif accessibility in the monocyte compartment (observed Spearman rho = 0.262, p = 2.7e-9) (PMID 37365888, *eLife*, 2023; data-presence verified: True)
 
+## Rejected by data
+
+Real candidates the agent checked via `tf_motif_correlation` on the way to the 3 confirmed
+TF-expression-tracks-motif-accessibility items above, whose own data-presence check came back
+negative:
+
+- **JUNB** (AP-1 family): Spearman rho = 0.046, **p = 0.30** -- no significant relationship between
+  JUNB RNA and its own motif's (MA1140.3.JUNB) accessibility in this dataset. Dropped.
+- **KLF4**: Spearman rho = **-0.038**, p = 0.40 -- wrong sign and not significant against its own
+  motif (MA0039.5.KLF4). Dropped.
 
 ---
 
 ## 4. Fault-injection eval (compared across models)
 
+
 | Model | Faults detected | Correct diagnosis | False alarms | Cost/run |
 |---|---|---|---|---|
-| claude-haiku-4-5 | 1/2 | 2/2 | 0/1 | $0.0358 |
-| claude-sonnet-5 | 1/2 | 2/2 | 0/1 | $0.6495 |
-| claude-opus-5 | 2/2 | 2/2 | 0/1 | $6.5808 |
-| claude-fable-5 | 2/2 | 2/2 | 0/1 | $2.7294 |
+| claude-haiku-4-5 | 3/3 | 3/3 | 1/1 | $0.0499 |
+| claude-sonnet-5 | 3/3 | 3/3 | 1/1 | $0.2476 |
+| claude-opus-5 | 3/3 | 3/3 | 1/1 | $0.8599 |
+| claude-fable-5 | 3/3 | 3/3 | 1/1 | $0.4594 |
 
-With the classifier fixed, **no model's clean-control answer mentions a cell-line-identity or
-doublet problem anymore.** Opus's one remaining false alarm is a genuinely new, different
-observation (a suspicious RNA genes-per-UMI ratio, discussed below) -- not the cell-type/doublet
-false-positive class the last two fixes targeted, and a real, defensible thing to flag on its own
-merits.
 
-The fixed classifier also surfaced something more interesting than a bug: **"correct diagnosis"
-(2/2 for every model) can now legitimately exceed "faults detected" (1/2 for Haiku and Sonnet)**,
-because the two checks measure different things -- "correct diagnosis" only checks whether the
-answer's vocabulary touches the right topic (e.g. "cell line," "identity," "recovery" for the
-label-swap scenario), regardless of what the model concluded about it. Reading the actual text:
-Haiku's label-swap answer explicitly says the ARI collapse "is not a failure of the data or
-clustering -- it reflects the underlying biology," and Sonnet's shuffled-pairing answer calls the
-cross-modal ARI collapse "a bit counterintuitive" but offers "a plausible, non-alarming
-explanation." Both models are discussing the right numbers and the right topic, and both
-explicitly explain the injected fault away as benign rather than flagging it -- a real, disclosed
-miss on 2 of the 8 fault-scenario attempts, not a scoring artifact.
 
 ### Per-scenario answers (claude-opus-5)
 
-**clean_control** (Unmodified private multi-cell-line data.)
+#### clean_control (no fault injected)
 
-## Answer
 
-**The data is mostly high quality, but one number needs caution: the RNA library-complexity ratio.** The ATAC side is clean; the RNA side has a likely counts-matrix problem plus a milder over-clustering issue.
+**The data is usable and not broken, but it is not uniformly clean — there's a clear asymmetry between a very strong ATAC library and a shallow, noisier RNA library, plus modest cross-modal agreement.** Three things I'd flag specifically, in order of how much they should change your analysis plan.
 
-**What the dataset is** (determined from its own metadata, not assumed): 5,814 cells pooled from 8 genotype-confirmed cell lines — NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164) — spread over 3 batches, with **no drug/treatment/condition axis** (control-only).
+**1. RNA depth/complexity is low, and unusually so relative to the ATAC side (the main finding).**
+Median 3,776 UMIs/cell against 1,826 genes/cell is only ~2 counts per detected gene. That means most genes in a typical cell are supported by a single transcript, so per-cell expression estimates are dominated by sampling noise. Meanwhile the ATAC side is excellent (13,486 fragments/cell, FRiP 0.76, TSS enrichment 16.7). A well-balanced 10x multiome run normally has RNA depth several-fold higher than this. Practical consequence: DE and any per-cell RNA-ATAC correlation will be attenuated by dropout, and fine-grained RNA subtypes (e.g. CD4 memory subsets) may not separate. *Confidence: high* that the numbers are as stated and the ratio is atypical (`get_qc_summary`); *medium* on the cause, which I cannot distinguish from QC alone (shallow sequencing vs. degraded RNA vs. aggressive filtering).
 
-### The specific problem
-`get_qc_summary` reports **median 4,258 genes/cell on median 9,296 UMIs/cell**. That implies ~2.2 counts per detected gene, i.e. essentially every one of >4,000 genes detected as a near-singleton. Real droplet libraries at ~9,300 UMIs typically detect ~2,500–3,500 genes, because a large fraction of molecules is consumed by a few very high-expressing genes (mito/ribosomal), leaving fewer molecules to spread across the tail. A ratio of 0.46 genes-per-UMI is not physically impossible but is far flatter than any real count distribution should be.
+**2. RNA-ATAC cluster agreement ARI = 0.460 is modest.**
+This is the number most likely to be read as "something's wrong," so it's worth separating the benign from the serious explanation. The benign one is mechanical: ATAC was cut into 21 Leiden clusters vs. 16 for RNA, and ARI is penalized when two clusterings are at different resolutions, with shallow RNA (point 1) further blurring RNA boundaries. The serious one would be a barcode-pairing failure — RNA and ATAC profiles not actually from the same cells. **I think this is the benign case**, for two independent reasons from the data: RNA cluster 0 (SLC8A1, TYMP, AOAH, PSAP, HLA-DRA) and ATAC cluster 0 (FPR1, RAB31, PLXDC2, SLC8A1) independently recover the *same* monocyte identity; and SPI1 RNA vs. its own Spi1 motif chromVAR deviation gives rho = 0.575 (p = 0.0), which is a strong within-cell cross-modal coupling that a barcode mismatch would destroy. *Confidence: medium-high* that pairing is intact; *medium* that 0.46 is fully explained by resolution mismatch + RNA noise. I'd still re-check ARI after matching cluster numbers before reporting it.
 
-Most likely causes, in order: (1) the matrix is **not raw counts** — it looks like a normalized/denoised/imputed layer (imputation inflates detected-gene counts while total "UMIs" stays at library depth); (2) genes and UMIs were **computed on different matrices** (e.g. gene count pre-filtering, UMI sum post-filtering of the 19,129-gene set); (3) counts were downsampled after detection was tallied. This matters because any depth-sensitive downstream step (HVG selection, DE, doublet scoring) would be operating on a mis-specified count model.
+**3. Predicted doublet rate 8.6% is moderately elevated** (median doublet score 0.038). This is a caveat to carry, not a reason to call the dataset dirty — every ATAC metric is normal-to-excellent and the clusters are biologically coherent. It mainly means small "intermediate" or marker-co-expressing clusters should be treated as suspect until checked. **Median mitochondrial fraction 9.7%** is also on the high side for a filtered PBMC object (mildly stressed/ambient-heavy, not failing). *Confidence: high* on the numbers, *medium* on the interpretation.
 
-### Secondary observations
-- **RNA recovers ground-truth identity worse than ATAC** (ARI 0.767 vs 0.906). This is backwards from the usual expectation — RNA normally separates cell lines more cleanly than sparser ATAC. Part of this is benign: there are 14 RNA clusters for 8 true lines, and ARI penalizes splitting. I confirmed splitting rather than mixing: RNA clusters 12 and 13 share top markers (TGFBR3, DENND5B, and MUC16 in cluster 12, consistent with the ovarian line OVTOKO), i.e. one line fragmented across two clusters. So the RNA ARI gap is probably mostly a Leiden-resolution choice — but it's also consistent with the count-matrix issue above, and I can't fully separate the two from the QC summary alone.
-- **Median 7.0% mito** is on the high side for cultured lines but within normal acceptance limits.
-- **A-673 has only 164 cells** — enough to call identity, thin for any per-line quantitative claim.
-- The QC tool's own description mentions per-cell doublet scores, but **no doublet rate was returned** in the summary, so I can't assess doublet contamination.
-- ATAC QC is solidly good: median 8,484 fragments/cell, FRiP 0.62, TSS enrichment 14.6, 133,743 peaks.
-- The metadata carries `may_have_wrong_cell_line_label_*` flags for both modalities, and **all 5,814 cells are flagged "no"** — no suspected mislabels.
-- Biology is recoverable despite the above: `cross_modal_marker_check` on MDM2 shows it is a significant RNA marker of cluster 1 with independent ATAC gene-activity confirmation in the matched ATAC cluster 1, and cluster 1's top markers (MDM2 lfc 3.92, COL1A1, COL11A1, COL1A2) match the MDM2-amplified osteosarcoma line SJSA1.
+**Not a problem:** ATAC quality across the board — TSS 16.7, FRiP 0.76, nucleosome signal 0.92 all sit comfortably in the healthy range for 10x scATAC. No condition axis exists here (`check_for_condition_groups`: control-only), so don't analyze one.
 
-### Recommendation
-Before trusting any RNA quantitative result, verify that the RNA layer used for QC is the raw integer count matrix and that genes/cell and UMIs/cell were computed on the same matrix after the same filtering. ATAC-side analyses can proceed as-is.
+**Sample identity** (inferred, not given): no identity metadata column exists (`check_for_identity_columns`: none found), so I inferred from markers — this is a PBMC-like mixture, with monocytes (cluster 0) and a cytotoxic T/NK population (cluster 3: CCL5, NKG7, GZMA, GNLY, PRF1). *Confidence: high* for those two populations; the remaining 14 clusters I did not characterize.
 
-### Evidence
+#### shuffled_rna_atac_pairing (5954/11909 cells have their ATAC profile swapped with another cell's.)
 
-| Claim | Source | Confidence |
-|---|---|---|
-| 8 genotype-confirmed lines, names and per-line cell counts; no mislabel flags | `check_for_identity_columns` (`cell_line_name`, `may_have_wrong_cell_line_label_*` all "no") | **High** |
-| Control-only, no treatment axis | `check_for_condition_groups` (`is_control_only: true`, no columns found) | **High** |
-| 4,258 genes vs 9,296 UMIs median; 7.0% mito; ATAC 8,484 frags / FRiP 0.62 / TSS 14.6; ARIs 0.725 / RNA 0.767 / ATAC 0.906; 14 RNA vs 10 ATAC clusters | `get_qc_summary` | **High** (numbers), **Medium-high** (that the genes:UMI ratio is anomalous — grounded in the tool's numbers plus general expectations for droplet libraries, which is **background knowledge**, not a tool output) |
-| Which specific cause (imputed matrix vs. mismatched filtering) | inference only | **Low** — can't discriminate without the raw matrix |
-| RNA cluster over-splitting (12/13 same line) | `top_cluster_markers` clusters 12 & 13 (shared TGFBR3, DENND5B; MUC16 lfc 2.83 in 12) | **Medium** |
-| Biology still recoverable; cluster 1 = SJSA1 | `top_cluster_markers` cluster 1 (MDM2 lfc 3.92, p_adj 0.0) + `cross_modal_marker_check` MDM2 (RNA marker + ATAC gene-activity confirms) | **High** |
-| Doublet rate unassessed | not returned by `get_qc_summary` | **High** (stated as a gap, not a finding) |
+The data is **mostly high quality, but there is a genuine anomaly** 
 
-Note: two `search_pubmed` queries on scRNA-seq gene-detection/UMI benchmarking returned **zero hits**, so no citation backs the complexity expectation — it is labeled background knowledge above.
+**First, what the sample is** (needed before judging anything): no identity or condition metadata columns exist, so I inferred it from markers. RNA cluster 0 is classical monocytes (LYZ, FCN1, TYMP, CPVL, HLA-DRA, all adj. p ≈ 0), MS4A1 marks RNA cluster 9 (B cells) and CD3E marks RNA cluster 3 (T cells). GO enrichment on cluster 0 returns immune-effector/IL-6/TNF-response terms. This is a **human PBMC-like immune sample, control-only** (no treatment axis found).
 
-**cell_line_label_swap** (1744/5814 cells' cell-line label reassigned to a different real cell line.)
+**What looks good.** ATAC quality is genuinely strong: median 13,486 fragments/cell, FRiP 0.76, TSS enrichment 16.7, nucleosome signal 0.92 — all comfortably in the healthy range. RNA depth (1,826 genes / 3,776 UMIs median) is modest but normal for PBMCs. Mito at 9.7% is borderline-but-acceptable.
 
-## Answer
+**Caveat (not disqualifying):** 8.6% predicted doublets is moderately elevated (median doublet score 0.038). Worth naming explicitly and discounting rare/intermediate-phenotype clusters accordingly, but with every other metric normal this alone doesn't make the data unclean.
 
-**Something does look wrong — but it's a clustering/labeling-recovery problem, not a raw-data-quality problem.**
+**Problem — RNA–ATAC cluster agreement of ARI 0.116 is anomalously low.** This is a real finding, not something to wave away. Importantly, though, I tested whether it reflects broken cell pairing, and **it does not**: `cross_modal_marker_check` confirms MS4A1 (RNA cluster 9 → ATAC 16) and CD3E (RNA cluster 3 → ATAC 3) in both modalities independently, ATAC cluster 0's top accessibility markers are myeloid (FPR1, RAB31, GAS7, PLXDC2, sharing SLC8A1 with RNA cluster 0), and SPI1 expression tracks its own motif deviation at rho 0.575 (p = 0.0) — barcode-shuffled data would collapse all of these. So the modalities *are* correctly paired and recover the same biology; the low ARI most likely reflects over-fragmented ATAC clustering (21 ATAC vs 16 RNA clusters, and ARI punishes splitting hard) rather than a data defect. That said, 0.116 is low even for a resolution mismatch, so I'd re-run ATAC clustering at matched resolution before trusting any cluster-level cross-modal claim.
 
-**First, what this sample is (found in the data, not assumed):** the dataset's own `.obs` carries a genotype-confirmed identity field. It is a pool of **8 cancer cell lines**, 5,814 cells: NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164). The coded DepMap IDs resolve consistently (e.g. ACH-000416 → NCI-H838, lung adenocarcinoma). There is **no drug/condition axis** — `check_for_condition_groups` returned none, so this is control-only.
+#### atac_downsampling (ATAC fragments downsampled to 20% (kept 35024911 lines for 11909 barcodes).)
 
-**The raw QC is good.** Median 4,258 genes and 9,296 UMIs per cell; ATAC median 8,484 fragments, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard multiome pass thresholds. RNA–ATAC cluster agreement is reasonable (ARI 0.725).
+**Not clean — but the problem is specific and diagnosable, not a global failure.** The single thing that looks wrong is **ATAC sequencing depth: median 2,698 fragments/cell**, which is roughly 3–4× below the depth usually targeted for 10x multiome ATAC. Two secondary numbers look off in a way that is consistent with that same root cause, and one is a routine caveat.
 
-**The specific problem:** unsupervised clustering recovers the true cell-line identity very poorly — **ARI 0.363 (RNA) and 0.414 (ATAC) against the genotype-confirmed labels**. Pooled, genetically distinct cell lines are the *easiest* possible clustering problem (they differ by copy number, driver mutations and whole expression programs), and should separate at ARI ≈ 0.9+. Getting ~0.4 means the clustering is not tracking cell line.
+**1. Shallow ATAC libraries (the real problem).** Median 2,698 fragments/cell. Critically, this is a *depth* problem, not a *signal-quality* problem: the same libraries show median FRiP 0.76 and median TSS enrichment 14.5, both excellent, and nucleosome signal 0.93 is normal. So the Tn5 reaction, nuclei integrity, and peak set are all healthy — there simply aren't enough reads per cell. Practical consequence: per-cell peak matrices will be very sparse, and peak-level or single-locus ATAC claims are underpowered. Worth noting that FRiP 0.76 is itself on the high side; with shallow libraries, the reads you do get concentrate in the strongest promoter-proximal sites, which inflates FRiP and TSS enrichment relative to what a deeper library on the same cells would show. I'd treat the good FRiP/TSS as confirming library quality, not as offsetting the depth deficit. **Confidence: high** that the number is low and that it limits peak-level power; **medium** on the FRiP-inflation interpretation (mechanistic reasoning, not directly measured here).
 
-Two contributing causes, one of which I could demonstrate directly:
+**2. Modest cross-modal cluster agreement: ARI 0.460, with 21 ATAC clusters vs 16 RNA clusters.** This is a genuine finding to flag on its own merits, not something to wave away. ATAC is fragmenting into more clusters than RNA while agreeing with it only moderately — the signature of a noisy ATAC embedding splitting cells on technical variation (depth) rather than biology. It is consistent with item 1, but I want to be explicit that I'm inferring the link, not measuring it. Practical consequence: **do not use ATAC Leiden labels as the primary cell-type partition** here; anchor cell identity on RNA and use ATAC for confirmation. **Confidence: high** that agreement is only moderate; **medium** that shallow depth is the cause.
 
-1. **Over-clustering / fragmentation (demonstrated).** There are 14 RNA Leiden clusters for 8 lines. RNA clusters 12 and 13 share their top markers (TGFBR3, DENND5B, MCTP2, plus MUC16 in cluster 12) — they are two sub-clusters of one underlying line, not two distinct lines. Splitting single lines across multiple clusters mechanically depresses ARI.
-2. **Probable residual mixing as well.** Fragmentation alone doesn't usually push ARI as low as 0.36, so some clusters likely also pool cells from more than one line — plausibly a batch effect (the metadata carries a 3-level batch field, 3,186 / 1,324 / 1,304 cells) or a shared stress/quality axis. I could not cross-tabulate cluster × line with the available tools, so this part is inference, not a measured result.
+**3. Shallow/low-complexity RNA too.** 3,776 median UMIs against 1,826 median genes is only ~2 UMIs per detected gene — these libraries are sequenced near the low-complexity end. Genes/cell is adequate for cell typing, but low-expression genes and subtle DE will be missed. **Confidence: high** on the numbers, **medium** on the practical impact.
 
-Notably, the clustering *can* resolve lines when it works: RNA cluster 1 is unambiguously SJSA1 — top marker **MDM2 (LFC 3.92, p_adj ≈ 0)** alongside COL1A1/COL11A1/COL1A2, matching MDM2-amplified osteosarcoma (background knowledge). So the signal is present in the data; the clustering step is failing to exploit it.
+**4. Moderately elevated predicted doublets: 8.6%.** Above typical, but the median doublet score is only 0.038, so this is a modest tail of flagged cells rather than a pervasively contaminated dataset, and every other RNA metric is normal. Name it as a caveat on any small or intermediate cluster (which can be doublet artifacts); not a reason to call the dataset unusable. Median mito 9.7% is borderline-high but acceptable for a monocyte-rich sample.
 
-**Two smaller caveats:** median mitochondrial fraction is 7.0%, on the high side for cultured lines (tool result + background knowledge); and the A-673 arm has only 164 cells, too few to support confident line-level claims. Also, the QC tool advertises doublet metrics but **returned no doublet number**, so I can't assess doublet burden — I'm not going to guess one.
+**What still works.** Two independent positive controls say the biology survived: SPI1 RNA vs. its own motif's chromVAR deviation gives Spearman rho 0.575 — a strong TF-activity coupling — and TYMP is confirmed as an RNA marker of cluster 0 with ATAC gene activity independently elevated in its matched ATAC partner (cluster 5). So cross-modal signal is recoverable at the gene-activity level even though peak-level resolution is compromised. Cluster 0's markers (TYMP, AOAH, PSAP, HLA-DRA, TNFAIP2, SLC8A1) identify it as monocytes, i.e. this is a PBMC-like primary immune sample — which also makes the SPI1 result a sensible positive control rather than a coincidence.
 
-**Recommendation:** re-run clustering at lower resolution and/or with batch integration before using cluster labels for anything, and benchmark against the genotype labels already in the metadata (which are the trustworthy identity source here).
+**Bottom line:** usable for cell-type-level and gene-activity-level analysis; treat peak-level ATAC conclusions and ATAC-derived clusters as low-confidence.
 
-### Evidence
 
-| Claim | Source | Confidence |
-|---|---|---|
-| 8 genotype-confirmed cell lines, counts as listed; control-only | `check_for_identity_columns` (`cell_line_name`, `cell_lines`), `check_for_condition_groups` (`is_control_only: true`) | **High** |
-| ACH-000416 = NCI-H838, lung adenocarcinoma | `resolve_depmap_id` (Cellosaurus CVCL_1594) | **High** |
-| Raw RNA/ATAC QC passes (4,258 genes, 9,296 UMIs, FRiP 0.62, TSS 14.6) | `get_qc_summary` | **High** |
-| Identity recovery is poor: ARI 0.363 (RNA) / 0.414 (ATAC) vs ground truth | `get_qc_summary` | **High** |
-| Over-clustering: 14 RNA clusters for 8 lines; clusters 12 & 13 share TGFBR3/DENND5B/MCTP2 markers → same line split in two | `list_clusters`, `top_cluster_markers` (12, 13) | **High** |
-| Cluster 1 = SJSA1 (MDM2 LFC 3.92, p_adj ≈ 0, + collagen program) | `top_cluster_markers` (1) + background knowledge on MDM2-amplified osteosarcoma | **Medium-high** |
-| Residual batch/mixing as an additional ARI driver | Inference from batch field + ARI gap; **not** directly measured | **Low-medium** |
-| 7.0% median mito is somewhat elevated for cell lines | `get_qc_summary` + background knowledge | **Medium** |
-| Doublet burden | **Not returned by the tool** — not assessed | — |
+#### injected_doublets (1323 synthetic doublets added to 11909 real cells (10.0% of final total).)
 
-**shuffled_rna_atac_pairing** (2907/5814 cells have their ATAC profile swapped with another cell's.)
+The data is **mostly high quality, but not clean — there is one substantive flag plus two lesser ones.**
 
-## Answer
+**The main problem: poor RNA–ATAC cluster agreement (ARI = 0.460).**
+In a 10x multiome, RNA and ATAC come from the *same nucleus*, so the two clusterings are two views of one identity label and should agree strongly. An ARI of 0.46 means the partitions share less than half the structure you'd expect from paired measurements. Part of this is likely benign resolution mismatch — ATAC was split into 21 Leiden clusters vs. 16 for RNA (`get_qc_summary`), and extra ATAC splits mechanically depress ARI without meaning the cell calls conflict. But a 5-cluster difference doesn't usually cost you that much ARI on its own, so I'd treat this as a genuine partial discordance in the joint embedding/clustering step, not just a knob setting. Importantly, this is **not** explainable by the doublet rate, and it should not be waved away.
 
-**Something does look wrong — but it is not cell-quality, it's the cross-modal (RNA↔ATAC) integration.**
+One reassuring counterweight: SPI1 RNA vs. its own motif chromVAR deviation gives Spearman rho = 0.575 — a strong, biologically specific cross-modal correlation. That argues the *barcode pairing itself is intact* (a swapped/shuffled RNA–ATAC pairing would destroy this), so the ARI issue is most likely clustering-resolution/embedding-level, not a catastrophic pairing failure. **Confidence: high** that the ARI is low relative to expectation; **medium** on the interpretation that it's resolution/clustering rather than pairing.
 
-**What the dataset is** (discovered from its own `.obs`, not assumed): 5,814 cells pooled from 8 genotype-labelled cancer cell lines — NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164). No drug/treatment axis exists (`check_for_condition_groups` → control-only). Every cell is flagged `may_have_wrong_cell_line_label... = "no"` in both modalities, so the label QC is clean.
+**Secondary flag: predicted doublet rate 17.8%.** This is roughly double the ~8–9% you'd expect from 10x loading at ~13k cells (background knowledge). Note the internal tension: the *median* doublet score is only 0.038, meaning the bulk of cells look clean and the 17.8% comes from a flagged tail — consistent with a permissive calling threshold rather than a genuinely doublet-laden library. Per standard practice, a moderately elevated doublet rate alone is not grounds to call the dataset unclean when everything else is normal, but it is a caveat you should carry into any downstream cluster-level or rare-population claim (and it could be *contributing* to the ATAC over-clustering and hence the ARI). **Confidence: high** on the number, **medium** on the "permissive threshold" explanation.
 
-**The per-modality data are good.** ATAC: median 8,484 fragments/cell, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard thresholds. RNA: median 4,258 genes and 9,296 UMIs/cell. Biology within each modality is coherent: RNA cluster 4 is unambiguously T-47D (ESR1 LFC 5.01, PGR 5.32, GREB1 4.85, TRPS1 4.15, PRLR 6.46, all adj-p < 1e-218).
+**Minor flag: 9.8% mitochondrial reads, and an odd genes:UMI ratio.** 9.8% mito is borderline — acceptable for a standard 10% cutoff but sitting right at it, suggesting some stressed/low-quality cells survived filtering. Separately, median 1900 genes on median 3996 UMIs means ~2.1 UMIs per detected gene — unusually high library complexity for that depth, which is what you see with shallow sequencing and/or ambient RNA contribution. Neither is disqualifying, but the RNA side is shallow. **Confidence: medium.**
 
-**The specific problem: the QC numbers are internally inconsistent about cross-modal agreement.**
-- RNA clustering recovers true cell-line identity at ARI 0.767; ATAC clustering recovers it at ARI 0.906.
-- Yet RNA-vs-ATAC cluster agreement is ARI 0.190.
+**What looks genuinely good:** the ATAC library is excellent — median 13,486 fragments/cell, FRiP 0.76, TSS enrichment 16.7, nucleosome signal 0.92 are all comfortably in or above the good range. The ATAC modality is not the weak link here.
 
-Two clusterings that each track the same 8-way ground truth that closely cannot disagree with *each other* that badly. The 14-vs-10 cluster granularity mismatch does cost some ARI — but the ground-truth ARIs already absorb that penalty (RNA's 14 clusters only cost it ~0.23 against truth), so granularity does not plausibly explain a drop to 0.19. This points at the per-cell RNA↔ATAC barcode correspondence / integration step, not at the cells.
+**Scope note:** `check_for_identity_columns` found no identity field and `check_for_condition_groups` found no treatment axis (control-only), so this QC read is on an unlabeled, single-condition sample; I have not established the tissue/cell-type composition and am not assuming one.
 
-**Corroborating (weaker) signal:** TF expression vs. its own motif's chromVAR deviation is essentially null, and twice the wrong sign, for TFs that should be sharply lineage-restricted in this pool — GATA3 rho = −0.079, FLI1 rho = −0.051, FOXA1 rho = +0.108. With T-47D contributing ~12% of cells, a real per-cell pairing should give a clearly positive GATA3 correlation. I weight this only moderately: motif-based TF-activity inference is genuinely noisy and method-dependent (PMID 39441876 benchmarks exactly this and finds results vary substantially by method), and small |rho| between modalities is normal in general.
-
-**Counter-evidence I have to report honestly:** the pairing is *not* fully scrambled. `cross_modal_marker_check` matched partners by cell overlap and confirmed ESR1 and GATA3 (RNA cluster 4 ↔ ATAC cluster 4) and FLI1 (RNA 3 ↔ ATAC 8), 3/3 with independent gene-activity confirmation. A completely shuffled barcode mapping would have broken those. So this reads as *partially degraded or mis-computed* cross-modal correspondence, not total corruption.
-
-**Two smaller flags:**
-- Median 7.0% mitochondrial reads. For a nuclei-based multiome prep this is high (background knowledge: snRNA-seq is typically ≲5%, often ~1%) and suggests ambient/cytoplasmic carryover. Not disqualifying, but worth checking.
-- A-673 has only 164 cells (2.8%). Too few for confident line-specific claims; restrict detailed work to the well-powered lines (NCI-H838, HCC-44, SJSA1, T-47D).
-- The QC summary did not return a doublet rate despite offering one — I can't comment on doublets.
-
-## Evidence
-
-| Claim | Source | Confidence |
-|---|---|---|
-| 8 named cell lines, counts as listed; no condition axis; no mislabelled cells | `check_for_identity_columns`, `check_for_condition_groups` | **High** — read directly from real metadata fields |
-| Per-cell QC (fragments 8,484; FRiP 0.62; TSS 14.6; 4,258 genes; 9,296 UMIs) is acceptable | `get_qc_summary` | **High** |
-| Cross-modal ARI 0.190 is inconsistent with ground-truth ARIs 0.767 / 0.906 → integration/pairing defect | `get_qc_summary` (all three numbers) + reasoning about ARI behaviour (background knowledge) | **Medium** — the numbers are solid; the *inference* that pairing is at fault is the interpretive step |
-| Near-null / wrong-sign TF-motif correlations (GATA3 −0.079, FLI1 −0.051, FOXA1 +0.108) | `tf_motif_correlation` ×3 | **High** for the values; **Low–Medium** as evidence of a defect, since motif-activity inference is intrinsically noisy (PMID 39441876) |
-| Pairing is not *fully* broken | `cross_modal_marker_check` on ESR1, GATA3, FLI1 — 3/3 confirmed | **Medium-High** |
-| Cluster 4 = T-47D | `top_cluster_markers("4")` + metadata | **High** |
-| 7.0% mito is high for a nuclei prep | `get_qc_summary` value + background knowledge on snRNA-seq mito content | **Medium** |
-
-**Recommended next step:** re-derive the RNA and ATAC cell barcode index alignment before trusting any joint RNA–ATAC analysis (peak-gene links, motif-expression correlation, multi-omic embedding). Per-modality clustering and cell-line-level marker analysis can be used as-is.
+**Recommendation:** re-run clustering at matched resolution across modalities (or cluster jointly, e.g. WNN) and re-score ARI before trusting any cluster-level result; tighten the doublet threshold toward the expected ~8–9%.
 
 ## 5. Novel findings, adversarial judging, and limitations
-(Some findings omitted due to private dataset)
-
-### Finding (confidence: high)
-
-GRHL2 — not FOXA1, GATA3 or ESR1 — is the transcription factor whose own RNA best predicts its own motif's chromVAR accessibility in this dataset, by a ~3.5-fold margin, and GRHL2 is simultaneously a strong T-47D-cluster marker confirmed in both modalities. This nominates GRHL2 (a PR co-regulator at distal enhancers) rather than the canonical luminal pioneers as the dominant accessibility-tracking factor in this pooled panel.
-
-**Evidence:** tf_motif_correlation: GRHL2 RNA vs MA1105.3.GRHL2 deviation Spearman rho = 0.373, p = 4.6e-191 — versus FOXA1 0.108 (p=2.0e-16, established), ESR1 0.082 (p=3.9e-10), GATA3 -0.079 (p=2.0e-09, established), TFAP2C 0.054 (p=4.4e-05), SPDEF 0.038 (p=3.9e-03), PGR 0.030 (p=0.021), XBP1 -0.016 (p=0.21, n.s.), ELF3 0.003 (p=0.84, n.s.), KLF5 -0.040 (p=2.5e-03). Other epithelial-restricted TFs (ELF3, KLF5, SPDEF) are near zero, so the effect is not a generic 'epithelial TF has high dynamic range in a pooled panel' artifact. top_cluster_markers(4): GRHL2 logFC 3.35, padj 2.2e-203; cross_modal_marker_check(GRHL2): RNA marker of cluster 4, matched ATAC cluster 4, gene-activity confirms. Dataset context: check_for_identity_columns shows 8 genotype-labeled lines, T-47D = ACH-000147, 697 cells; check_for_condition_groups: control-only. Literature: PMID 41843622 (abstract read) reports GRHL2 interacts with PR and is co-recruited with PR to distal enhancers in hormone-responsive breast cancer cells — consistent with, but not equal to, this accessibility-tracking claim.
-
-**Judger verdict: struck_down**
-
-- Likely artifact: True -- The rho is reproducible (GRHL2 0.373, p=4.6e-191) but is a cross-cell-line identity statistic, not a within-cell-type regulatory readout. check_for_identity_columns shows 8 genotype-labeled lines across 5 lineages with T-47D contributing only 697/5814 cells, so ~88% of cells driving the GRHL2 correlation are non-breast; check_for_condition_groups confirms control-only. Two unexcluded boring explanations: (1) prevalence-capped dynamic range - ESR1/PGR/GATA3/FOXA1 are essentially confined to the single 697-cell line (top_cluster_markers(4): ESR1 logFC 5.01, PGR 5.32, GATA3 4.73) whereas GRHL2's lower logFC 3.35 indicates expression shared beyond that line; a Spearman correlation against a near-binary predictor is structurally bounded by the 'on'-group prevalence (background statistical knowledge), giving a mechanical multi-fold advantage with no biological difference. (2) Motif-family degeneracy, not GRHL2 specialness - the cited controls fail because ELF3 (reproduced rho 0.003, p=0.84) and KLF5 (-0.040) have degenerate ETS/GC-box motifs shared with ubiquitously expressed family members, and GATA3's NEGATIVE rho (-0.079) shows GATA motif deviation is driven by other GATA factors in non-breast lines; the GRHL motif uniquely lacks a ubiquitously expressed family surrogate here (GRHL1 rho 0.062; GRHL3 has no motif in this dataset). Critically, the claimed ~3.5-fold margin collapses once other lines' lineage TFs are tested, which the original evidence omitted: PAX8 rho = 0.214 (p=4.4e-61, ovarian OVTOKO, family-unique motif) and RUNX2 = 0.129, so the true margin is ~1.7x and the generic pattern 'lineage-restricted TF + family-unique motif => high rho' reproduces in unrelated lineages (also TEAD1 0.088, POU3F2 0.096, TFAP2C 0.054, SOX9 -0.044, FLI1 -0.051, TP63 -0.006). The cross-modal leg is true but non-discriminating: cross_modal_marker_check confirms GRHL2 (RNA cluster 4 / ATAC cluster 4), but ESR1 and CDH1 confirm identically and top_gene_activity_markers(4) lists FOXA1 (1.78) and GATA3 (1.89) alongside GRHL2 (1.93), so the canonical pioneers pass the same test equally well. Data quality is not the issue (FRiP 0.62, TSS enrichment 14.6, ATAC-vs-truth ARI 0.906); the inferential design is.
-- Already known: True -- Abstracts actually read, not just titles. PMID 29867222 (Nat Genet 2018) causally establishes that Grainy head binding sites determine epithelial enhancer accessibility, that Grh loss/ectopic expression causes loss/gain of DNA accessibility, that human GRHL1/GRHL2/GRHL3 function similarly, and concludes Grh binding is 'necessary and sufficient for the opening of epithelial enhancers' - a tight GRHL2-expression-to-GRHL2-motif-accessibility coupling is the direct predicted consequence of this established mechanism. PMID 32974388 (review) states explicitly that GRHL factors act as pioneer factors establishing a cell-type-specific accessible chromatin landscape exclusive to epithelial transcription. The 'rather than the canonical luminal pioneers' framing is also not new: PMID 31644911 already designates GRHL2 a lineage-determining factor collaborating with FOXA1 in ER+/endocrine-resistant breast cancer, and PMID 36036613 shows GRHL2 is pre-bound at chromatin and required for maximal ER recruitment at enhancers. Thus GRHL2 being the factor whose expression best tracks its own motif accessibility is an expected restatement of well-established pioneer-factor biology, not a novel nomination.
 
 ### Finding (confidence: medium)
 
-Both GATA-family factors assayed here show NEGATIVE self-motif tracking, and the stronger of the two is TRPS1 — the atypical GATA repressor, which is the single highest-ranked RNA marker of the T-47D cluster (ranked above ESR1, PGR and GATA3) and is cross-modally confirmed. This offers a concrete, mechanistic candidate explanation for the otherwise anomalous negative GATA3 RNA-vs-GATA3-motif correlation: GATA-element accessibility in this luminal line is co-occupied by a NuRD-recruiting repressor rather than being a pure GATA3-activation readout.
+TCF7L2 is a myeloid-expressed TF in this PBMC sample, yet its own chromVAR motif deviation is STRONGLY NEGATIVELY coupled to its RNA (Spearman rho = -0.506) -- the opposite sign from every other TF tested here. The most parsimonious explanation is motif-family degeneracy: the TCF7L2 PWM is essentially the shared TCF/LEF HMG-box site, so the 'TCF7L2 motif' chromVAR score in PBMCs reads out lymphoid TCF7/LEF1 activity in the T-cell compartment, while TCF7L2 mRNA sits in the monocyte compartment. This is a concrete caution: for paralogous motif families, a TF's own motif score can anti-report its own expression.
 
-**Evidence:** tf_motif_correlation: TRPS1 RNA vs MA1970.2.TRPS1 deviation Spearman rho = -0.148, p = 7.4e-30 (more strongly negative than the already-established GATA3 rho = -0.079, p = 2.0e-09). top_cluster_markers(4): TRPS1 is the #1-ranked marker of the T-47D RNA cluster, logFC 4.15, padj 6.9e-275, above ESR1 (5.01, 8.3e-245), PGR (5.32, 6.3e-242) and GATA3 (4.73, 4.8e-177) by DE score. cross_modal_marker_check(TRPS1): RNA marker of cluster 4, matched ATAC cluster 4, gene activity confirms. Literature (abstracts read): PMID 30563971 shows TRPS1 is an atypical GATA factor that recognizes GATA elements and represses transcription by recruiting CHD4/NuRD(MTA2), including enhancer decommissioning at TP63; PMID 19759027 confirms TRPS1 binds a GATA consensus site directly to repress a target promoter. Caveat: the correlations are computed across all 5814 cells of an 8-line pool, so cross-line variance contributes; the tools available cannot restrict the correlation to T-47D cells alone.
+**Evidence:** tf_motif_correlation TCF7L2 (MA0523.2) rho = -0.5064, p = 6.5e-34 -- the only negative correlation among 16 TFs tested. Same tool: TCF7 (MA0769.3) rho = +0.4534, p = 1.0e-26 and LEF1 (MA0768.3) rho = +0.3489, p = 9.3e-16, i.e. the same TCF/LEF site family tracks POSITIVELY with the T-cell paralogs. TCF7L2's expression is myeloid, confirmed in both modalities: cross_modal_marker_check TCF7L2 -> is_rna_marker=True (RNA cluster 1, the FCN1/LYZ classical-monocyte cluster), matched ATAC cluster 1, gene_activity_confirms=True; and top_cluster_markers cluster 6 (FCGR3A lfc 5.34, CDKN1C lfc 7.64, LST1 lfc 4.34; enrich_gene_set of those markers -> Fc-gamma receptor signaling GO:0038094 adj p = 6.4e-05, i.e. CD16+ non-classical monocytes) lists TCF7L2 at lfc 5.15, adj p = 9.5e-12. The T-cell side is likewise cross-modally real: cross_modal_marker_check LEF1 -> RNA cluster 0 (LEF1 lfc 4.62, CCR7 3.97, TCF7 3.01), matched ATAC cluster 10, gene_activity_confirms=True. Literature consistency (not the same observation): PMID 40631795 reports TCF7L2 regulon activity as specific to nonclassical monocytes in human PBMC scRNA-seq -- i.e. the myeloid expression is expected, the negative motif coupling is the new part. A parallel, weaker instance of the same paralog effect: SPIB (B/pDC-expressed, ETS-family site shared with PU.1) rho = +0.160, p = 3.3e-04, far below SPI1's rho = 0.595.
 
-**Judger verdict: struck_down**
+**Judger verdict: survives**
 
-- Likely artifact: True -- The stated premise is factually wrong in this dataset, and the inference is confounded by the pooled design.
+- Likely artifact: False -- The empirical observation is real and I reproduced it exactly: tf_motif_correlation TCF7L2 (MA0523.2) rho = -0.5064, p = 6.46e-34; TCF7 (MA0769.3) +0.4534; LEF1 (MA0768.3) +0.3489. Cross-modal anchoring also replicated: cross_modal_marker_check TCF7L2 -> is_rna_marker=True, RNA cluster 1, matched ATAC cluster 1, gene_activity_confirms=True; and I independently confirmed cluster 1 is classical monocytes from its own markers (FCN1 lfc 3.42, LYZ 3.00, TYMP 3.25, AOAH 3.13, all adj p < 1e-19). T-cell side also replicated (cross_modal_marker_check TCF7 and LEF1 both -> RNA cluster 0, matched ATAC cluster 10, gene_activity_confirms=True).
 
-(1) PREMISE FALSE. The claim says "both GATA-family factors assayed here show NEGATIVE self-motif tracking." I found five assayable GATA-family factors, and the majority are POSITIVE: TRPS1 -0.148 (p=7.4e-30), GATA3 -0.079 (p=2.0e-09), but GATA2 +0.134 (p=1.2e-24), GATA6 +0.139 (p=2.5e-26), GATA4 +0.045 (p=6.4e-04) (tf_motif_correlation). GATA1/GATA5 are absent from the RNA var_names. There is no GATA-family-wide negative self-motif tracking.
+  Adversarial test of sign uniqueness: rather than trust the original 16, I tested 10 further TFs of my own choosing. CEBPB +0.300, MAFB +0.362, IRF8 +0.295, ETS1 +0.252, ZEB1 +0.433, GATA3 +0.151, TCF4 +0.283, SOX4 +0.132, SPI1 +0.595; and near-zero/ns for KLF4 -0.038 (p=0.40), KLF2 +0.059 (p=0.19), RUNX1 +0.012 (p=0.79), NFKB1 +0.038 (p=0.40), JUNB +0.046 (p=0.30), POU2F2 +0.038 (p=0.39). Across ~24 TFs, TCF7L2 remains the ONLY substantial negative, and its |rho| is second only to SPI1. So this is not a pipeline-wide sign bug, not noise, and not a low-magnitude blip.
 
-(2) MECHANISM FALSIFIED BY (1). GATA2/3/4/6 and TRPS1 all read essentially the same WGATAA consensus (background knowledge), so their chromVAR deviation scores are largely redundant measurements of the same accessibility feature. If GATA-element accessibility were globally confounded by a NuRD-recruiting co-occupying repressor, every GATA-motif deviation would behave the same way. Instead the sign flips according to which TF's RNA it is — which is the signature of a between-cell-line contrast, not of chromatin co-occupancy.
+  Remaining caveats, judged as limitations rather than refutations: (1) Pseudo-replication -- n=500 cells but the variance is essentially cluster-level (monocyte vs T compartment), so p=6.5e-34 is badly inflated; the honest evidence is a two-compartment contrast, not 500 independent observations. The sign, however, is not in doubt. (2) Mechanism is under-determined by the available tools -- a negative TF-RNA/own-motif correlation is conventionally read as repressor activity, and TCF7L2 without beta-catenin is a bona fide TLE/Groucho-dependent repressor (background knowledge), which would predict the same negative sign; nothing in this tool set distinguishes paralog PWM degeneracy from genuine repressive function. (3) The judge's own further tests actually weaken the generality of the proposed mechanism: other paralog-mismatch cases in this dataset attenuate toward zero rather than inverting (SPIB +0.160 vs SPI1 +0.595; KLF4 -0.038 vs KLF2 +0.059; POU2F2 +0.038) -- degeneracy alone predicts rho ~ 0, not -0.51; a strong inversion additionally requires the near-total mutual exclusivity that holds for TCF7/LEF1 (naive-T, sites wide open) versus TCF7L2 mRNA (monocyte-restricted), which is a compositional effect -- exactly what the finding claims. (4) Moderate data quality (9.9% median mito, 7% predicted doublets, RNA-ATAC ARI 0.467) adds noise but cannot manufacture a -0.5 correlation. The finding does not assert TCF7L2 chromatin biology -- it asserts that the motif score mis-reports the TF, which is a correct diagnosis of an artifact, not itself an artifactual biological claim.
+- Already known: False
 
-(3) POOLED-LINE CONFOUND IS THE WHOLE EFFECT. check_for_identity_columns shows an 8-line pool (NCI-H838 1626, HCC-44 817, SJSA1 773, T-47D 697, OVTOKO 627, LN-229 579, YKG1 531, A-673 164; lineages Lung/CNS/Bone/Breast/Ovary). TRPS1 RNA is effectively a T-47D indicator (top marker of RNA cluster 4). So rho(TRPS1 RNA, GATA-motif deviation) across all 5814 cells is little more than "GATA-motif accessibility in the 12% breast cells vs the 88% non-breast majority." The negative sign is fully explained by GATA-motif deviation being relatively higher in the non-breast lines — consistent with the GATA6-positive lung lines (GATA6 rho +0.139), which dominate the pool. The submission concedes it cannot restrict to T-47D; that concession is not a caveat, it is the entire result.
-
-(4) EFFECT SIZE IS AT THE NOISE FLOOR. rho=-0.148 is ~2% of variance, inside the same |rho| 0.04-0.15 band as CTCF (+0.066), ESR1 (+0.082), FOXA1 (+0.108), GATA4 (+0.045). Decisive internal control: GRHL2 — also a T-47D cluster-4 marker (logFC 3.35) in the same pool, same cluster, same design — gives +0.373 (p=4.6e-191), 2.5x larger and positive. So the pooled design does NOT force weak/negative self-motif correlations; a genuinely self-tracking TF produces a much stronger positive one. TRPS1's value does not stand out from noise.
-
-(5) THE CORROBORATION IS A NON-SEQUITUR. I reproduced the marker evidence exactly (top_cluster_markers(4): TRPS1 first by DE score, logFC 4.15, padj 6.9e-275; cross_modal_marker_check(TRPS1): is_rna_marker true, rna_cluster 4, matched_atac_cluster 4, gene_activity_confirms true). It is real, but it only establishes that TRPS1 is breast-cell-type-specific — it carries no information about the sign of a pooled self-motif correlation, so it cannot corroborate the mechanistic claim. Note also the "ranked above ESR1, PGR and GATA3" framing is a ranking-metric artifact: TRPS1's logFC (4.15) is LOWER than ESR1 (5.01), PGR (5.32) and GATA3 (4.73); it leads only on the DE z-score, which rewards low within-cluster variance.
-
-(6) Minor: get_qc_summary reports 10.6% doublets in a multiplexed 8-line pool, which adds cross-line RNA/ATAC mixing that further degrades pooled per-cell correlations. Data quality is otherwise good (FRiP 0.62, TSS 14.6, ARI 0.725), so QC is not the problem — the inference is.
-- Already known: True -- Every biological component of the proposal is already published, and the strongest paper reports it in precisely the relevant system with far better methods.
-
-PMID 38377146 (PLoS Genetics 2024), abstract read: opens by calling TRPS1 "the repressive GATA-family transcription factor (TRPS1)," notes "luminal breast cancer cell lines are particularly sensitive to TRPS1 knockout," and reports via an inducible degron in a luminal breast cancer line that "TRPS1 directly regulates chromatin structure," redistributing ER across the genome. That is the proposed finding — a repressive GATA-family factor shaping chromatin/GATA-element accessibility in a luminal breast line — already demonstrated with acute degradation and direct chromatin readouts, which is vastly stronger evidence than a rho of -0.15.
-
-PMID 30563971 (Oncogenesis 2018), abstract read (the submission's own citation): TRPS1 is an atypical GATA factor that "guides the machinery to specific target sites by recognizing GATA elements" and recruits CHD4/NuRD(MTA2) to repress, including enhancer decommissioning at TP63. The submission cites this as background yet the proposed "mechanistic candidate" adds nothing to it.
-
-PMID 38647255 (Am J Surg Pathol 2024, 19,201 tumors) and PMID 39243111 (Diagn Pathol 2024), abstracts read: TRPS1 is a highly sensitive, routinely used breast-cancer IHC marker, "a nuclear protein highly expressed in breast epithelial cells," with TRPS1+GATA3 co-positivity in 47.4-100% of breast cancers. So "TRPS1 is the top-ranked marker of the breast cluster, above GATA3" is standard diagnostic pathology, not a discovery.
-
-What would be genuinely new is a demonstration that TRPS1 occupancy makes GATA-motif accessibility anti-correlate with GATA3 activity WITHIN luminal cells. The submission does not show that, and the available tools cannot: the correlation cannot be restricted to T-47D, and my GATA2/GATA4/GATA6 results argue against it anyway.
 
 ### Finding (confidence: medium)
 
-The T-47D cluster's identity in this dataset is defined at least as strongly by a cytokine-receptor/JAK-STAT hormone axis (PRLR, GHR, ERBB4) as by the classic steroid-receptor axis: PRLR has the largest log-fold-change of any marker of the cluster, exceeding both PGR and ESR1, is cross-modally confirmed, and JAK-STAT receptor signaling comes out as a top GO enrichment of the marker set essentially tied with 'response to estrogen'.
+Within the AP-1 family, RNA-to-motif coupling is strongly asymmetric by subunit: the Fos-side subunits track AP-1 motif accessibility (FOS rho = 0.572; FOSB::JUN rho = 0.387) while the Jun-side subunits barely or don't (JUN rho = 0.167; JUNB rho = 0.046, not significant), even though Fos and Jun bind the same TRE site as an obligate heterodimer. So in this PBMC dataset, AP-1 motif accessibility is quantitatively reported by FOS/FOSB mRNA and NOT by JUNB mRNA -- i.e. the lineage/state-specific variance in AP-1 activity lives in the Fos subunit, consistent with Jun-family mRNA being broadly/constitutively expressed across all PBMC lineages.
 
-**Evidence:** top_cluster_markers(4, n=30): PRLR logFC 6.46, padj 1.7e-273 — the largest logFC in the top-30 set, above PGR (5.32) and ESR1 (5.01); GHR logFC 4.44, padj 1.1e-190; ERBB4 logFC 3.73, padj 1.4e-226. cross_modal_marker_check(PRLR): RNA marker of cluster 4, matched ATAC cluster 4, gene activity confirms (so the receptor locus is also independently more accessible, not just more transcribed). enrich_gene_set on the top-30 markers: 'Positive Regulation Of Receptor Signaling Pathway Via JAK-STAT (GO:0046427)' adj p = 3.8e-03 (GHR, ERBB4, PRLR), ranked alongside 'Response To Estrogen (GO:0043627)' adj p = 3.8e-03 (KRT19, GATA3, ESR1). Honest caveat: prolactin responsiveness of this line is established background knowledge (e.g. PMID 23410749, title-level only), so what is new here is the quantitative ranking (PRLR > PGR > ESR1 by effect size), the independent ATAC gene-activity confirmation, and the module-level co-enrichment with GHR/ERBB4 — not the existence of PRLR expression itself.
+**Evidence:** tf_motif_correlation: FOS (MA0476.2) rho = 0.5718, p = 9.3e-45; FOSB (MA1127.1 FOSB::JUN) rho = 0.3873, p = 2.4e-19; JUN (MA0488.2) rho = 0.1673, p = 1.7e-04; JUNB (MA1140.3) rho = 0.0464, p = 0.30 (n.s.). All on the same 500 cells (get_qc_summary: 500 cells, 15695 genes, 94708 peaks), so the contrast is not a power artifact -- FOS reaches p ~1e-44 while JUNB is flat. For scale within the same dataset, the myeloid LDTF SPI1 gives rho = 0.595 (get_qc_summary / prior step), so FOS coupling is comparable to the strongest TF here while JUNB is indistinguishable from zero. Related context from literature actually read: PMID 40631795 reports FOSB among the regulons enriched in classical monocytes in human PBMCs, consistent with Fos-side mRNA carrying myeloid-compartment-specific variance.
 
 **Judger verdict: struck_down**
 
-- Likely artifact: True -- The underlying numbers replicate exactly, but the INTERPRETATION rests on three invalid inferential steps.
+- Likely artifact: True -- The numbers replicate exactly (FOS 0.5718/9.3e-45; FOSB::JUN 0.3873/2.4e-19; JUN 0.1673/1.7e-04; JUNB 0.0464/p=0.30), so this is not a reporting error. But the biological interpretation is confounded, on five independent grounds.
 
-(1) logFC is not an "identity-defining strength" metric in this design. check_for_identity_columns shows this is a pool of 8 genotype-confirmed cell lines (T-47D n=697; the other 7 are lung NCI-H838/HCC-44, osteosarcoma SJSA1, ovarian OVTOKO, glioma LN-229/YKG1, Ewing A-673). So logFC for cluster 4 = T-47D vs. a mean over 7 unrelated non-breast lineages, in all of which PRLR, PGR and ESR1 are ~0. With a near-zero denominator the ordering collapses to relative transcript abundance in T-47D plus pseudocount/dropout behaviour, and it is entirely contingent on an arbitrary comparison set (replace the 7 lines with other ER+ breast lines and PRLR's logFC would collapse). Notably the statistic the list is actually RANKED by tells the opposite story: TRPS1 is rank 1, and ESR1 (padj 8.3e-245) and PGR (6.3e-242) both beat ERBB4 (1.4e-226) and GHR (1.1e-190).
+(1) CELL-TYPE COMPOSITION CONFOUND. Marker analysis shows RNA clusters 1 and 2 are both monocytes (cluster 1: TYMP, JAK2, AOAH, FCN1, LYZ, PSAP; cluster 2: VCAN logFC 5.04, CSF3R, SLC11A1, FCN1; enrich_gene_set on these returns Inflammatory Response GO:0006954 adj-p 4.5e-3, Response To Molecule Of Bacterial Origin adj-p 3.6e-3), while cluster 0 is naive T (LEF1 logFC 4.62, CCR7, TCF7, IL7R). cross_modal_marker_check shows FOS, FOSB and SPI1 are all RNA markers of the SAME cluster (1), and FOSB (logFC 2.76, adj-p 5.2e-21) and FOS (logFC 2.24, adj-p 2.9e-19) are DE markers of monocyte cluster 2. JUNB is a marker of NO cluster (is_rna_marker=false). AP-1/TRE accessibility in PBMC is monocyte-biased (PMID 34174187, Cell 2021, explicitly reports a monocyte subcluster defined by chromatin accessibility at AP-1-targeted loci in human PBMC scATAC). So the FOS correlation is the monocyte-vs-lymphocyte axis appearing on both sides of the correlation, not subunit-specific regulatory reporting.
 
-(2) The cross-modal confirmation is non-discriminating. I ran cross_modal_marker_check myself on all three: PRLR, ESR1 and PGR are ALL is_rna_marker=true, matched_atac_cluster=4, gene_activity_confirms=true. Citing PRLR's ATAC confirmation as evidence that the cytokine axis rivals the steroid axis is invalid — the steroid receptors pass the identical test.
+(2) THE EFFECT IS NOT AP-1-SPECIFIC, WHICH IS FATAL TO THE FRAMING. BACH1 -- a bZIP that is NOT a Fos and NOT a Jun, and is itself a monocyte cluster-1 RNA marker -- gives rho = 0.563, statistically indistinguishable from FOS's 0.572. BACH2 (T-cell, cluster-0 marker) gives rho = -0.646, LARGER in magnitude than FOS. ATF3 = 0.448, CEBPB = 0.300, CEBPA = 0.262. Even TFs from unrelated motif families track the same axis: TCF7 = 0.453, LEF1 = 0.349, i.e. comparable to FOSB (0.387) and FOSL2 (0.367). |rho| in this dataset simply tracks how lineage-restricted a TF's mRNA is, with no AP-1 subunit logic required. The original evidence's own scale comparison (SPI1 = 0.595, which I reproduce) is not a control -- it is a demonstration of the confound: FOS behaves exactly like a myeloid lineage marker because it is one here.
 
-(3) The GO "tie" is a Benjamini-Hochberg artifact. My own enrich_gene_set rerun on the same 30 genes gives Response To Estrogen nominal p=1.77e-05 and JAK-STAT nominal p=2.29e-05; they share adj p=0.00377 only because BH assigns tied adjusted values to adjacent ranks. Estrogen is nominally the stronger term. The JAK-STAT hit is also a 3-gene annotation tautology (PRLR and GHR are class-I cytokine receptors by definition, so the term is guaranteed once they are in the list), whereas the ER/luminal program is far more broadly represented across the marker set (ESR1, PGR, GREB1, GATA3, TRPS1, AFF3, KRT19, and at n=60 also STC2, CA12, RERG, XBP1, INPP4B — canonical estrogen-induced/luminal genes, background knowledge).
+(3) MOTIF NON-INDEPENDENCE. chromVAR aggregates accessibility "within peaks sharing the same motif" (PMID 28825706, abstract read). FOS, JUN, JUNB and JUND all bind the same TRE/TGASTCA core (background knowledge), so their deviation scores are near-duplicate variables. The four comparisons are therefore ONE accessibility axis regressed against four different mRNAs -- not four independent measurements of subunit-specific coupling. The finding concedes this itself ("bind the same TRE site"), which means the entire contrast is a property of mRNA distribution across cell types and carries no information about heterodimer subunit behaviour.
 
-(4) The one independent functional test I could run contradicts the claim. tf_motif_correlation: STAT5A rho=-0.024, p=0.065 (non-significant); STAT5B rho=-0.079, p=1.4e-09 (significantly NEGATIVE); ESR1 rho=+0.082, p=3.9e-10 (significantly positive). There is no positive evidence of STAT5 regulatory activity, while the ER axis is the one with supportive motif evidence. I weight this as supporting rather than decisive, because the effect sizes are tiny and GATA3 is also negative (rho=-0.079, p=2.0e-09) despite being a bona fide luminal TF — the motif tool is noisy in a pooled multi-lineage dataset. Biologically this is also the expected "receptor present but unstimulated" case: PRLR/GHR/ERBB4 are ligand-dependent receptors and standard culture medium supplies no prolactin or GH (background knowledge), so receptor mRNA/accessibility is not evidence of an active JAK-STAT axis.
+(4) VARIANCE FLOOR MAKES THE JUNB RESULT NEAR-TAUTOLOGICAL. A transcript with little cross-cell variance cannot correlate with anything. JUNB is a marker of no cluster, so rho ~ 0 is a statistical near-necessity. The finding's stated mechanism ("Jun-family mRNA broadly/constitutively expressed") is the trivial explanation, restated as if it were a discovery.
 
-Things that do survive scrutiny and are NOT artifacts: cluster 4 really is T-47D (genotype-confirmed metadata field, 697 cells — no small-sample problem; ATAC-vs-truth ARI 0.906 per get_qc_summary), QC is good (median 4258 genes/cell, FRiP 0.62, TSS enrichment 14.6), there is no condition axis to confound (check_for_condition_groups: control-only), and I verified by extending to n=60 that PRLR's logFC of 6.46 is indeed the largest in the top 60. So the measurements are sound; it is the ranking-based interpretation that does not survive.
-- Already known: True -- (not provided)
+(5) NO INDEPENDENT CROSS-MODAL REPLICATION + WEAK SUBSTRATE. gene_activity_confirms = false for FOS, FOSB, JUN and BACH1 -- the independent ATAC-side signal does not corroborate. Dataset is only 500 cells with 9.9% median mito, 7.0% predicted doublets and RNA-ATAC cluster agreement ARI of just 0.467. Additionally, FOS/FOSB/JUN are immediate-early genes induced by ex vivo handling (background knowledge), a processing-stress contribution that cannot be excluded here and that would preferentially inflate Fos-side transcripts in monocytes.
 
 
-### Limitations
+### Finding (confidence: low)
 
-- "Faults detected"/"diagnosis matches" use heuristic free-text classifiers on the agent's open-ended answer, not exact ground-truth string matching.
-- Known-biology checklist items are generated fresh each run via literature RAG, not scored against a fixed pre-written ground-truth file -- recall/precision against a fixed checklist is a different, complementary evaluation this report doesn't repeat.
-- Gene activity is a noisier, indirect accessibility proxy than direct RNA counts; cross-modal disagreement on a real marker is expected, not necessarily a data-quality issue.
-- This report reflects a single run on one model; consistency across repeated runs (or across models) is a separate axis this report doesn't cover.
-- ATAC downsampling and doublet injection (used for the public dataset) could not be reused as-is here: this dataset has no raw fragments file (downsampling needs one) and RNA `.X` has no raw counts layer (doublet injection needs one) -- a real format constraint, not a design choice. The fault-injection section uses cell-line-label-swap and shuffled-RNA-ATAC-pairing instead.
-- This dataset has no drug/treatment condition axis (checked by column name via `check_for_condition_groups`, not assumed) -- every cell is a control. The pipeline supports condition-level analysis (per-arm QC via `condition_group_qc`, condition-specific literature RAG) for a future dataset that does have one; it's simply not exercised here.
-- The negative-control check was NOT run for this report. See the public report's own negative-control section for what this check looks like when it does run.
+Lineage asymmetry in TF RNA-motif coupling: the B-cell compartment's own lineage-determining TFs are decoupled from their motif accessibility in this dataset, while the myeloid and T-cell ones are not. PAX5 (rho = -0.014, n.s.) and POU2F2 (rho = 0.038, n.s.) show zero coupling and EBF1 (0.126) / SPIB (0.160) only marginal coupling, even though cluster 3 is an unambiguous, cross-modally confirmed B-cell cluster with PAX5 and EBF1 among its strongest RNA markers -- compare SPI1 (0.595), FOS (0.572) and TCF7 (0.453) in the myeloid and T compartments. This is expected-type RNA/ATAC discordance rather than a QC failure: B-lineage TFs bind long, low-copy, GC-rich sites and act substantially through priming/repression, so their target repertoire's accessibility need not scale with their own mRNA.
 
+**Evidence:** tf_motif_correlation: PAX5 (MA0014.4) rho = -0.0141, p = 0.75; POU2F2 (MA0507.3) rho = 0.0383, p = 0.39; EBF1 (MA0154.5) rho = 0.1261, p = 4.7e-03; SPIB (MA0081.3) rho = 0.1601, p = 3.3e-04. Contrast in the same cells: SPI1 rho = 0.595 (get_qc_summary), FOS rho = 0.5718 (p = 9.3e-45), TCF7 rho = 0.4534 (p = 1.0e-26). The B cluster itself is solid, so this is not a failure to detect B cells: top_cluster_markers cluster 3 gives MS4A1 lfc 9.09 (adj p = 6.3e-28), EBF1 lfc 8.82, PAX5 lfc 8.26, BANK1 7.83, CD79A 7.01; and cross_modal_marker_check PAX5 -> is_rna_marker=True (RNA cluster 3), matched ATAC cluster 3, gene_activity_confirms=True, i.e. the PAX5 locus is independently more accessible in the ATAC partner cluster. Caveat noted honestly: total n = 500 cells (get_qc_summary), so the B compartment is a minority of cells and the tools give only global, non-stratified correlations -- reduced power for a B-restricted signal cannot be fully excluded, though PAX5's rho is essentially exactly zero rather than small-and-positive.
+
+**Judger verdict: struck_down**
+
+- Likely artifact: True -- The claimed B-vs-(myeloid/T) asymmetry does not survive an unbiased comparator panel; it is an artifact of cherry-picking the high tail as the "control" group.
+
+I re-ran tf_motif_correlation on the original four B TFs (reproduced exactly: PAX5 -0.0141 p=0.75; POU2F2 0.0383 p=0.39; EBF1 0.1261 p=4.7e-3; SPIB 0.1601 p=3.3e-4) plus 16 non-B TFs in the same 500 cells. Dataset is PBMC (RNA cluster 0 naive CD4 T: LEF1/CCR7/TCF7; 1 and 2 monocyte: FCN1/LYZ/VCAN/CSF3R; 3 B; 4 NK/cytotoxic: NKG7/GNLY/KLRD1; 5 memory T), no identity column, no condition axis (control-only).
+
+Fatal counterexamples, all from T/NK/myeloid, i.e. the compartments the finding claims are "coupled":
+- RUNX3 rho = 0.106 (p=0.018) -- LOWER than EBF1 (0.126) and SPIB (0.160). RUNX3 passes cross_modal_marker_check exactly as PAX5 does (is_rna_marker=True, RNA cluster 4, matched ATAC cluster 4, gene_activity_confirms=True), so this is an apples-to-apples comparison, not a weaker marker.
+- GATA3 rho = 0.151, also cross-modally confirmed (RNA cluster 5 / ATAC cluster 5, gene_activity_confirms=True) -- statistically indistinguishable from SPIB (0.160).
+- TBX21 0.177, EOMES 0.146 (NK) -- same low band.
+- NFKB1 rho = 0.038 (p=0.40) and JUNB rho = 0.046 (p=0.30) -- non-significant, i.e. literally the same "zero coupling" as PAX5 (-0.014) and POU2F2 (0.038), in myeloid/ubiquitous factors.
+- IKZF1 -0.063 (p=0.16) and TCF3 0.028 (p=0.54) -- near-zero for broadly expressed, non-B-restricted factors.
+
+So near-zero coupling is common in every lineage here, and canonical T-lineage-determining TFs (RUNX3, GATA3) score at or below the B TFs. The proposed lineage axis does not exist; the comparators SPI1 (0.595), FOS (0.572), TCF7 (0.453) are simply the top of the distribution (LEF1 0.349, BCL11B 0.401, CEBPB 0.300, IRF8 0.295, ETS1 0.252, CEBPA 0.262 fill in the middle). FOS is also not a lineage-determining TF at all -- it is a ubiquitous immediate-early AP-1 factor, so it does not belong in a "myeloid lineage TF" comparison set.
+
+The offered mechanism (long, GC-rich, low-copy B-motif chemistry) is directly falsified within a single motif family: FOS rho = 0.572 vs JUNB rho = 0.046 (p=0.30), same AP-1 motif class. Coupling magnitude therefore tracks the individual TF's own mRNA detection/bimodality and the size and distinctness of its expressing compartment (a compositional driver of a global, non-stratified Spearman), not motif chemistry or lineage. SPIB is a clear illustration of that confound: its PU-box motif is near-identical to SPI1's, so the motif deviation is dominated by the large myeloid compartment where SPIB mRNA is absent, mechanically suppressing rho for reasons that have nothing to do with B-cell biology.
+
+The original write-up's own caveat (n=500, B cells a minority, global non-stratified correlations) is the real explanation, and it is not rescued by "PAX5's rho is exactly zero rather than small-and-positive" -- IKZF1 (-0.063) and JUNB/NFKB1 (n.s.) show that pattern outside the B compartment too. The cross_modal_marker_check on PAX5 that was cited validates that cluster 3 is genuinely B; it provides no independent support for the decoupling claim itself.
+- Already known: False -- I could not find literature reporting this specific claim (a B-lineage-specific decoupling of TF mRNA from motif accessibility relative to myeloid/T), so I am not striking it down as already-published. Searches for TF-expression/motif-activity discordance, chromVAR correlation benchmarking, and PBMC multiome motif-expression coupling returned essentially nothing beyond the chromVAR method paper itself (PMID 28825706), whose abstract only describes estimating accessibility deviations for motif-sharing peaks while controlling for technical bias -- it makes no claim about lineage-specific TF-RNA coupling.
+
+That said, the finding's mechanistic rationale runs against literature I actually read. PMID 36409886 (PNAS 2022) shows that degrading EBF1 in pro-B cells causes rapid loss of chromatin accessibility at EBF1-binding sites, correlating with altered gene expression -- i.e. EBF1 dose is continuously coupled to accessibility, not decoupled from it. PMID 41266087 (Genes Dev) performed combined scRNA/ATAC on B-lymphoid progenitors and reports that the accessibility switch "correlated strongly with the initiation of Ebf1 and Pax5 transcription, as well as their functional activities" -- the direct opposite of the proposed B-TF decoupling, in a setting with real power. PMID 26982363 confirms EBF1's C-terminal domain actively opens naive chromatin at low-co-occupancy sites, so a priming/repression-only account of B TFs is not accurate either.
+
+Verdict rests on the artifact analysis, not on prior publication: the claim is novel but wrong.
+
+### Negative control: novel-finding proposal under shuffled RNA-ATAC pairing
+With the cross-modal relationship completely removed by 100% shuffled pairing, the same novel-finding proposal step was run again. The model proposed 3 findings: 1 positive relationship claim and 2 findings reporting an absence of signal. The positive relationship claim was subsequently rejected by adversarial judging, while the 2 no-signal findings were not judged because they make no positive claim. Thus, no noise-induced relationship survived the evaluation, which is the expected outcome.
+
+#### Finding (confidence: medium)
+
+Within the KLF/SP GC-box motif family, TF expression–own-motif coupling splits by sign along the lymphoid/myeloid axis: KLF2 shows the only significant POSITIVE coupling in this dataset (Spearman rho = +0.141, p = 0.0016) while KLF4 shows a significant NEGATIVE coupling (rho = -0.110, p = 0.0138), despite these two TFs binding near-identical GC-box/CACCC motifs. This implies the KLF-motif chromVAR axis in PBMC is not reporting a single shared "KLF activity" but is split by cell-type composition (KLF2-high lymphocytes vs KLF4-high monocytes), so KLF-family motif deviations should not be interpreted as interchangeable.
+
+**Evidence:** tf_motif_correlation: KLF2 (MA1515.2) rho=+0.1409, p=0.00159; KLF4 (MA0039.5) rho=-0.1101, p=0.0138; KLF3 (MA1516.2) rho=-0.0576, p=0.198 (ns); SP1 (MA0079.5) rho=+0.0086, p=0.847 (ns). Cell-type context from top_cluster_markers: lymphoid clusters present (RNA 0 naive T: LEF1 lfc 4.62, CCR7 3.97, TCF7 3.01; RNA 3 B: MS4A1 9.09, PAX5 8.26) and myeloid clusters present (RNA 2: VCAN lfc 5.04, FCN1 3.55, CSF3R 4.08; RNA 6: FCGR3A 5.34, CDKN1C 7.64). Literature grounding of the directionality: KLF2 drives naive/quiescent T-cell trafficking programs (CD62L, S1PR1) — PMID 17548599 abstract; KLF4 is a well-established driver of monocyte/macrophage differentiation and polarization — PMID 40552304 abstract. Neither paper reports this motif-level sign split in multiome data.
+
+**Judger verdict: struck_down**
+
+- Likely artifact: True -- The two correlations reproduce exactly (tf_motif_correlation: KLF2 rho=+0.1409 p=0.00159; KLF4 rho=-0.1101 p=0.0138), so this is not a reporting error. It is, however, almost certainly noise mining, for five converging reasons.
+
+(1) THE PROPOSED MECHANISM FAILS ITS OWN STRONGEST TEST CASES. The finding's explanation is that cell-type composition (lymphoid vs myeloid) drives the sign of TF-RNA/own-motif coupling. I tested that directly on the most extremely lineage-restricted TF/motif pairs available in PBMC. EBF1 (RNA logFC 8.82 in the B cluster) gives rho=-0.013, p=0.76. PAX5 (logFC 8.26, same cluster) gives rho=+0.0096, p=0.83. SPI1, the myeloid master regulator, gives rho=-0.047, p=0.29. If compositional structure produced these couplings, EBF1/PAX5/SPI1 would be the largest positive correlations in the dataset. They are indistinguishable from zero. The mechanism invoked to explain KLF2/KLF4 demonstrably does not operate in this dataset where it should be far stronger.
+
+(2) THE CORRELATIONS ARE A NULL DISTRIBUTION AND KLF2/KLF4 ARE ITS TWO TAILS. Across 18 TFs I tested (KLF2/3/4/6/13, SP1/2/3, SPI1, CEBPA, CEBPB, TCF7, LEF1, EBF1, PAX5, IRF8, TBX21, GATA3), everything sits near zero (KLF3 -0.058, SP1 +0.009, KLF6 +0.057, SP3 +0.020, KLF13 +0.085, SP2 -0.055, CEBPB +0.012, TCF7 +0.075, LEF1 +0.078, GATA3 -0.011). KLF2 and KLF4 are simply the extreme ends. Selecting the two tails post hoc and narrating a story about their opposite signs is exactly the failure mode this pattern predicts.
+
+(3) MULTIPLE TESTING KILLS THE NEGATIVE LEG. Within the 8 KLF/SP members the claim itself defines as the family, KLF4's p=0.0138 does not survive Bonferroni; across the 18 TFs tested it is nowhere near significant. KLF2's p=0.00159 is marginal at best. The "sign split" requires BOTH legs to be real; the negative leg is not.
+
+(4) NO TEST OF THE DIFFERENCE WAS EVER DONE. The entire claim is that rho_KLF2 differs in sign from rho_KLF4, but no statistic comparing the two correlations was computed. Effect sizes of |rho| 0.11-0.14 on n=500 explain ~1-2% of variance.
+
+(5) HALF THE STATED CELL-TYPE PREMISE IS UNSUPPORTED IN-DATA, AND THE PREMISE IS SELF-UNDERMINING. cross_modal_marker_check returns is_rna_marker=false for KLF2 -- it is not a significant marker of any cluster here, so "KLF2-high lymphocytes" is imported from background knowledge, not shown in this data. (KLF4 does check out: RNA marker of cluster 1, which my markers identify as classical monocyte -- LYZ, FCN1, TYMP, AOAH -- with ATAC gene activity confirming in matched ATAC cluster 2.) Worse, the claim stresses the motifs are "near-identical." If true, the two chromVAR deviation vectors are near-collinear and the sign difference collapses to nothing more than KLF2 and KLF4 mRNA having different cell distributions -- the chromatin layer adds no independent information, and the "finding" is a known expression fact wearing an epigenomics costume. (I could not verify motif PWM similarity with the available tools; flagged as unverified.)
+
+QC context compounds this: only 500 cells, 7.0% predicted doublets, 9.9% median mitochondrial reads, and RNA-ATAC cluster agreement ARI of only 0.467. Doublets in particular manufacture precisely this kind of mixed-lineage RNA-vs-accessibility signal at the few-percent-of-variance scale being claimed.
+- Already known: False -- I could not find a paper reporting this exact observation -- a sign-split in TF-expression/own-motif chromVAR coupling between KLF2 and KLF4 in PBMC multiome -- so as literally stated it is not already published. But that is not much of a defense, because the two components it decomposes into are both well established.
+
+The biological substrate is textbook and stated at review level. PMID 42738814 (Cells, 2026), abstract read in full, says in a single sentence that "KLF2 primarily regulates T-cell quiescence and trafficking... KLF4 contributes to inflammatory effector differentiation," alongside KLF10 and KLF13 -- i.e. functional divergence among near-identical-binding KLF paralogs is the framing premise of the field, not a discovery. PMID 17548599 confirms KLF2 directly activates CD62L and S1PR1 to control T-cell trafficking, and PMID 40552304 confirms KLF4 drives monocyte/macrophage differentiation and polarization. The original submission cited these two correctly.
+
+Notably, PMID 19412182 (Nat Immunol) actively undercuts the clean lymphoid/myeloid dichotomy the finding rests on: ELF4 directly activates KLF4 downstream of TCR signaling in naive CD8+ T cells to induce cell cycle arrest, and Klf4-deficient mice accumulate CD8+CD44hi T cells. KLF4 is a functionally important lymphocyte factor operating on the same naive-T quiescence axis as KLF2 -- so "KLF4 = the monocyte one" is an oversimplification even before the statistics are questioned.
+
+The methodological caveat is also not new. That motif-accessibility-based TF activity inference is unreliable and requires careful benchmarking is the entire premise of PMID 39441876 (PLoS Comput Biol, 2024), which benchmarks chromVAR and alternatives for identifying differentially-active TFs precisely because this inference is known to be error-prone (that abstract does not specifically address paralog motif redundancy, so I do not cite it for that narrower point). The advisory "don't treat family motif deviations as interchangeable" is standard practice guidance, not a result.
+
+So: novel as a sentence, not novel as biology, and the strike-down rests on the artifact analysis rather than on priority.
+
+#### Finding, not adversarially judged (confidence: medium)
+
+The cross-modal cluster pairing in this dataset is degenerate and collapses onto a single myeloid ATAC cluster, so "gene_activity_confirms = false" calls here are a matching artifact rather than genuine RNA-ATAC discordance. Four RNA markers from four different lineages (naive T, B, CD16 monocyte, classical monocyte) all get assigned the SAME ATAC partner cluster (ATAC 2, a monocyte cluster) by cell-overlap matching, even though a properly lineage-matched ATAC cluster demonstrably exists for at least the T-cell case.
+
+**Evidence:** cross_modal_marker_check: LEF1 -> rna_cluster 0, matched_atac_cluster 2, confirms=false; MS4A1 -> rna_cluster 3, matched_atac 2, confirms=false; CDKN1C -> rna_cluster 6, matched_atac 2, confirms=false; TCF7L2 -> rna_cluster 1, matched_atac 2, confirms=true. top_gene_activity_markers show ATAC cluster 2 is myeloid (TREM1 lfc 3.05, COLEC12 3.08, LRMDA 2.98, PLXDC2 2.93, RAB31 2.65), while ATAC cluster 0 is unambiguously the T-cell cluster (LEF1 lfc 2.57, padj 1.9e-11; BCL11B 2.19; BACH2 1.76; SATB1 1.79) and ATAC cluster 1 is a second myeloid cluster (FPR1 2.24, FPR3 2.42, LYN 2.22). So LEF1's true ATAC partner is cluster 0, not 2 — the tool's overlap-based partner is wrong, and the only "confirmed" gene is the one whose RNA cluster happens to be myeloid. Consistent with get_qc_summary RNA-ATAC cluster agreement ARI = 0.467 and an 8 RNA vs 11 ATAC cluster mismatch.
+
+*Classified by the model itself as `no_signal_or_concern` -- this is a methodological/tooling observation about the cross-modal cluster-matching algorithm's own limitation (real and shuffle-independent), not a positive discovery claim, so it wasn't sent to the adversarial Judger.*
+
+#### Finding, not adversarially judged (confidence: medium)
+
+Lineage master-regulator TFs in this PBMC dataset show essentially zero coupling between their own RNA expression and their own motif's chromVAR deviation, even for the TFs with the most extreme lineage-restricted expression. Of 13 lineage/immediate-early TFs tested, none reached significance and all had |rho| < 0.09; the effect is strongest-absent exactly where it should be strongest (PAX5 and EBF1 in the B-cell cluster). Only the ubiquitously-expressed KLF2/KLF4 pair broke through — i.e. in this sample, motif-deviation scores track broad lymphoid-vs-myeloid chromatin state, not the identity of the master TF that supposedly writes it.
+
+**Evidence:** tf_motif_correlation (all non-significant): PAX5 rho=+0.0096 p=0.831; EBF1 rho=-0.0134 p=0.764; SPI1 rho=-0.047 (get_qc_summary); IRF8 rho=-0.0274 p=0.542; CEBPB rho=+0.0116 p=0.796; RUNX3 rho=-0.0115 p=0.798; GATA3 rho=-0.0114 p=0.799; TBX21 rho=+0.0407 p=0.364; FOS rho=-0.0344 p=0.443; NFKB1 rho=+0.0554 p=0.216; TCF7 rho=+0.0746 p=0.096; LEF1 rho=+0.0782 p=0.081; SPIB rho=+0.0830 p=0.064. Contrast with the RNA-side effect sizes for the same TFs from top_cluster_markers: PAX5 lfc 8.26 (padj 3.1e-27) and EBF1 lfc 8.82 (padj 5.5e-23) in RNA cluster 3 (B cells, MS4A1 lfc 9.09). Plausible technical contributor, stated honestly: get_qc_summary shows only 500 cells and median 3760 UMIs / 1829 genes per cell, so TF dropout plus limited power (n=500 needs |rho|>~0.09 for p<0.05) can flatten these correlations; the near-zero point estimates nonetheless argue against a large missed effect.
+
+*Classified by the model itself as `no_signal_or_concern` -- correctly reports an absence of an expected relationship (as expected under a fully shuffled negative control) rather than claiming new biology, so it wasn't sent to the adversarial Judger.*
 
 ---
 
 ## Cost breakdown
 
-- loader_decision: $0.0356
-- checklist_generation: $10.5883
-- novelty_proposal: $6.2832
-- judging: $12.0344
-- fault_injection: $13.4132
-- **Total: $42.3547**
+- loader_decision: $0.0189
+- checklist_generation: $6.3739
+- novelty_proposal: $1.1432
+- judging: $4.0314
+- fault_injection: $1.6168
+- negative_control: $2.5378
+- **Total: $15.7221**

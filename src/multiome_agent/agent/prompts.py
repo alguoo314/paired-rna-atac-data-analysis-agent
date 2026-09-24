@@ -75,9 +75,16 @@ RNA, `top_gene_activity_markers` for the independent ATAC-side signal, \
 `cross_modal_marker_check` to cross-validate a candidate between \
 modalities) when no such field exists. If the dataset turns out to pool \
 multiple distinct cell lines/lineages, you don't need to exhaustively \
-characterize every one -- identify the overall composition, then focus \
-detailed work (literature checklist, novel findings) on one clearly \
-characterized line rather than spreading thin across all of them. Also \
+characterize every one -- identify the overall composition, then span \
+detailed work (literature checklist, novel findings) across a handful of \
+different lines chosen at random, rather than concentrating everything on \
+whichever single line happens to be easiest or most already-characterized. \
+"Span across lines" means the SET of claims should name different lines \
+across it -- claim 1 about line A, claim 2 about line B, claim 3 about line \
+C -- not any single claim hedging generically across several lines at once: \
+each individual claim should still be specific, well-established biology \
+about ONE named line, exactly as specific as if you'd focused on one line \
+the whole time. Also \
 call `check_for_condition_groups` early -- most datasets are control-only, \
 but don't assume that; if it finds a real condition axis, check \
 `condition_group_qc` before analyzing conditions separately, and don't \

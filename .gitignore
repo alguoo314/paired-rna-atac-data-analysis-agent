@@ -9,5 +9,6 @@ __pycache__/
 /cache/
 *.h5ad
 *.h5mu
+!demo_cache/agent_demo_core.h5mu
 .venv/
 config/local_paths.yaml

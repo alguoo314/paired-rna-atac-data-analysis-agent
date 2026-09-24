@@ -31,8 +31,14 @@ RECORD_CHECKLIST_ITEM_TOOL = {
     "name": "record_checklist_item",
     "description": (
         "Record ONE known-biology checklist item, grounded in a literature abstract you "
-        "actually fetched and read (via fetch_pubmed_abstracts) and verified is usable in "
-        "THIS dataset. Call this once per item, up to 3 times per category."
+        "actually fetched and read (via fetch_pubmed_abstracts). Two cases: (1) a claim you "
+        "verified holds in this dataset -- confirmed_present_in_data=true; (2) a specific, "
+        "real candidate whose own data-verification tool call CLEARLY contradicted the "
+        "literature claim (not significant, wrong sign, or the gene/motif absent from this "
+        "dataset) -- confirmed_present_in_data=false. Do NOT record a candidate that checked "
+        "out fine but simply wasn't needed once enough confirmed items were found in that "
+        "category -- that's not a rejection, just leave it unrecorded. Call this once per item, "
+        "up to 4 times per category (matching the 4-candidate-per-category cap)."
     ),
     "input_schema": {
         "type": "object",
@@ -60,9 +66,16 @@ this dataset's own metadata already encodes identity (e.g. a real cell-line colu
 of DepMap "ACH-XXXXXX" IDs you resolve with `resolve_depmap_id`), that's real discovery and you \
 should use it directly, not re-derive it the hard way. Only fall back to marker-based inference \
 (cluster markers, cross-modal validation) if no such field exists. If this dataset pools multiple \
-distinct cell lines/lineages, don't try to exhaustively characterize every one -- identify the \
-overall composition quickly, then pick ONE clearly-characterized line to build the checklist \
-around.
+distinct cell lines/lineages, don't try to exhaustively characterize every one, and don't \
+concentrate the whole checklist on a single line either -- identify the overall composition \
+quickly, then span your candidates across a handful of different lines chosen at random rather \
+than defaulting to whichever one is easiest or most already-characterized. Spanning means the SET \
+of claims should name different lines across it -- e.g. one claim about line A, the next about \
+line B, the next about line C -- NOT a single claim that vaguely covers several lines at once \
+(e.g. "elevated in epithelial cancer cells" is too generic; "ESR1 is expressed in T-47D, an \
+ERalpha-positive luminal breast cancer line" is the right level of specificity). Every individual \
+claim should be exactly as specific and well-established as if you'd focused on one line the \
+whole time -- spanning changes WHICH line each claim is about, not how specific any one claim is.
 
 Then, for that specific identity, build a known-biology checklist grounded in real literature, \
 working through these three categories IN ORDER:
@@ -92,6 +105,13 @@ out absent, pick a different candidate rather than forcing it. Don't spend exces
 re-verifying a candidate that already checked out, and don't backtrack to a finished category \
 once you've moved on -- but do move through all 3 categories with real effort on each, not just \
 the first one you reach.
+
+Report failures, not just successes: if a specific candidate's own data-verification tool call \
+clearly CONTRADICTS the literature claim -- not significant, wrong sign, or absent from this \
+dataset -- record that too via `record_checklist_item` with `confirmed_present_in_data=false`, \
+so a real negative result is captured rather than silently discarded. This is different from a \
+candidate that simply checked out fine but wasn't needed once you'd already found enough \
+confirmed items in that category -- don't record those, just move on.
 """
 
 
