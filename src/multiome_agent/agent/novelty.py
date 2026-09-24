@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from multiome_agent.agent.loop import TOOLS, AgentRunResult, run_agent
+from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
 from multiome_agent.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -146,13 +147,15 @@ class JudgedFinding:
 
 
 def propose_novel_findings(
-    mdata, qc_summary: str, dataset_context: str, checklist_summary: str = "",
+    mdata, qc_summary: str, dataset_context: str | None = None, checklist_summary: str = "",
     model: str | None = None, max_turns: int = 25, is_negative_control: bool = False,
 ) -> tuple[list[dict], AgentRunResult]:
+    """`dataset_context` defaults to `OWN_DATA_CONTEXT` (see
+    `checklist_generator.generate_checklist`'s docstring for why)."""
     result = run_agent(
         _novelty_question(checklist_summary, is_negative_control=is_negative_control), model=model,
         max_turns=max_turns, mdata=mdata, qc_summary=qc_summary, tools=NOVELTY_TOOLS,
-        dataset_context=dataset_context,
+        dataset_context=dataset_context if dataset_context is not None else OWN_DATA_CONTEXT,
     )
     findings = [tc["input"] for tc in result.tool_calls if tc["name"] == "record_novel_finding" and not tc.get("is_error", False)]
     for f in findings:
@@ -162,9 +165,12 @@ def propose_novel_findings(
 
 
 def judge_novel_findings(
-    findings: list[dict], mdata, qc_summary: str, dataset_context: str,
+    findings: list[dict], mdata, qc_summary: str, dataset_context: str | None = None,
     model: str | None = None, max_turns: int = 20,
 ) -> list[JudgedFinding]:
+    """`dataset_context` defaults to `OWN_DATA_CONTEXT` (see
+    `checklist_generator.generate_checklist`'s docstring for why)."""
+    dataset_context = dataset_context if dataset_context is not None else OWN_DATA_CONTEXT
     judged = []
     for f in findings:
         result = run_agent(
@@ -194,7 +200,7 @@ def judge_novel_findings(
 
 
 def check_novelty_negative_control(
-    shuffled_mdata, shuffled_qc_summary: str, dataset_context: str, model: str | None = None
+    shuffled_mdata, shuffled_qc_summary: str, dataset_context: str | None = None, model: str | None = None
 ) -> dict:
     """Runs `propose_novel_findings` against a shuffled-RNA-ATAC-pairing
     state (no real cross-modal relationship left) -- a well-behaved

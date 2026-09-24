@@ -29,7 +29,7 @@ def score_shuffled_pairing(clean_mdata_with_clusters, shuffled_mdata) -> dict:
     """Cross-modal signal only, mirroring `scoring.score_shuffled_pairing`'s
     tenx-cell-ranger-data version -- but without a TF-motif-rho delta, since there's
     no single canonical TF for an arbitrary cell-line panel the way SPI1 is
-    for PBMC (see SHARESEQ_DATASET_CONTEXT's own reasoning). Per-modality
+    for PBMC (see OWN_DATA_CONTEXT's own reasoning). Per-modality
     signals (each modality's own QC, gene activity, motif deviations, and
     even `cell_line_recovery_ari_atac`) are unaffected by construction --
     the permutation moves each cell's full ATAC row (data AND its own true

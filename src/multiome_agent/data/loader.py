@@ -25,7 +25,7 @@ readers don't have to re-derive them):
   plus a convenience ``primary_gene`` (first token).
 
 ``atac_fragments.tsv.gz``/``.tbi`` and the hg38 reference genome are untouched
-here -- they're for Day-1 step 3 (ATAC QC via fragments, motif deviations),
+here -- they're for steps 3-4 (ATAC QC via fragments, motif deviations),
 not this loader.
 """
 

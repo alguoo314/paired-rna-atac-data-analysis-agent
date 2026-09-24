@@ -2,8 +2,8 @@
 
 Not to be confused with the agent's reasoning trail (structured log of its
 plan, tool calls, and justifications, per CLAUDE.md's "everything is logged"
-principle) — that's a separate structured writer built alongside the Day-1
-step-4 agent loop, since it needs to be machine-readable, not just console output.
+principle) — that's a separate structured writer built alongside the
+step-5 agent loop, since it needs to be machine-readable, not just console output.
 """
 
 import logging

@@ -1,5 +1,5 @@
 """Disk cache for the shareseq-multi-cell-lines fixed-core result (now
-including chromVAR motif deviations, added after the initial Stretch-phase
+including chromVAR motif deviations, added after the initial private-data
 build wrongly deferred them -- see PROGRESS.md's correction entry).
 
 The full run (5,814 cells, ~134K filtered peaks x 879 JASPAR motifs) takes

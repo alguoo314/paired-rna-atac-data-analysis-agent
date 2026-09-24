@@ -5,7 +5,7 @@ Reused directly by the comprehensive report (`agent/report_generator.py`)
 (see CLAUDE.md's Evaluation §8 and `run_shareseq_model_eval`'s docstring).
 
 Design choice, matching the tenx-cell-ranger harness exactly and deliberately
-avoiding the mistake documented in PROGRESS.md's Day 2 step 7b (an earlier
+avoiding the mistake documented in PROGRESS.md's step 10 (an earlier
 version of the tenx-cell-ranger harness handed the model a "baseline vs. current"
 comparison directly, inflating detection rates for free): every scenario's
 `run_agent` call gets the CLEAN cached `mdata` (neither shareseq-multi-cell-lines fault type
@@ -29,7 +29,7 @@ from sklearn.metrics import adjusted_rand_score
 
 from multiome_agent.agent.loop import run_agent
 from multiome_agent.agent.shareseq_qc_summary import format_shareseq_qc_summary, shareseq_fixed_core_summary
-from multiome_agent.agent.prompts import SHARESEQ_DATASET_CONTEXT
+from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
 from multiome_agent.core.clustering import ATAC_CLUSTER_KEY, RNA_CLUSTER_KEY
 from multiome_agent.eval.eval_harness import _NEGATION_CUES, _NEGATION_WINDOW, PROBLEM_WORDS, _classify_detected
 from multiome_agent.eval.grounding import check_grounding
@@ -194,7 +194,7 @@ def build_shareseq_scenarios(clean_mdata) -> list[dict]:
 def _run_shareseq_scenario(clean_mdata, scenario: dict, model: str | None = None) -> ShareseqScenarioResult:
     result = run_agent(
         QUESTION, model=model, mdata=clean_mdata, qc_summary=scenario["qc_summary"],
-        dataset_context=SHARESEQ_DATASET_CONTEXT,
+        dataset_context=OWN_DATA_CONTEXT,
     )
     grounding = check_grounding(result)
     detected = _classify_detected(result.answer)

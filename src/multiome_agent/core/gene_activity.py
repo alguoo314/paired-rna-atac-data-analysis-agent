@@ -35,7 +35,7 @@ def compute_gene_activity(mdata: MuData, snap_data) -> pd.DataFrame:
     *extension dtype*, not scipy sparse): anndata's h5mu writer has no
     registered method for that pandas dtype and raises `IORegistryError` on
     write, only surfacing when something actually caches the MuData to disk
-    (not in step 3b's in-memory-only tests, only once step 4's agent cache
+    (not in step 4's in-memory-only tests, only once step 5's agent cache
     tried to persist it). A plain scipy sparse matrix in `.obsm` is natively
     h5-writable. It's a derived *view* of ATAC accessibility keyed by gene
     rather than peak, not an independently-measured modality, so it belongs
@@ -144,7 +144,7 @@ def compute_gene_activity_from_peaks(mdata: MuData, upstream_bp: int = 2000) -> 
     matrix but no fragments file (the shareseq-multi-cell-lines dataset --
     `compute_gene_activity`'s `snap.pp.make_gene_matrix` needs a snapatac2-
     imported fragments object, which doesn't exist for that data; see
-    PROGRESS.md's Stretch-phase entry on this).
+    PROGRESS.md's step 19 entry on this).
 
     This is the standard fallback ArchR/Signac use when only a peak matrix
     is available: sum each cell's peak counts over whichever peaks overlap

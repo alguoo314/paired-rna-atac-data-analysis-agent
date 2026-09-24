@@ -1,4 +1,4 @@
-"""Minimal hand-rolled tool-calling agent loop (Day 1 step 4).
+"""Minimal hand-rolled tool-calling agent loop (step 5).
 
 Hand-rolled rather than the SDK's beta `tool_runner` helper: this project
 needs a precise custom max-turns guard and a structured, readable
@@ -38,7 +38,7 @@ logger = get_logger(__name__)
 RUNS_DIR = REPO_ROOT / "logs" / "agent_runs"
 
 # $ per 1M tokens, verified current rates (not training-data memory) for
-# Day 2's model comparison table.
+# step 10's model comparison table.
 MODEL_COSTS = {
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
     "claude-sonnet-5": {"input": 3.00, "output": 15.00},
@@ -400,7 +400,7 @@ def run_agent(
     per-cell data).
 
     `dataset_context` defaults to `PBMC_DATASET_CONTEXT` (unchanged behavior
-    for every pre-existing caller) -- pass `SHARESEQ_DATASET_CONTEXT` (from
+    for every pre-existing caller) -- pass `OWN_DATA_CONTEXT` (from
     `agent.prompts`) for shareseq-multi-cell-lines runs. Fixes a real bug: before this
     parameter existed, every run used the PBMC-specific system-prompt text
     unconditionally, and a real eval run against the shareseq-multi-cell-lines data caught a

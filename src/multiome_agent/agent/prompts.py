@@ -161,16 +161,21 @@ or condition(s) this sample contains. Determine that from evidence (see \
 principle 6) before making any claim that assumes a specific identity.
 """
 
-# Appended for the shareseq-multi-cell-lines dataset run. Also near-empty for
-# the same reason as PBMC_DATASET_CONTEXT -- but with one genuinely
-# different, non-identity-revealing OUTPUT POLICY this dataset needs that
-# the tenx-cell-ranger one doesn't: once the agent has determined a real cell-line
-# identity from evidence, that name may appear in its answer (this is a
-# deliberate, explicit exception to this project's default anonymization
-# convention for this specific project phase), but nothing about the data's
-# SOURCE ever may -- no file paths, project names, or lab/institution names,
-# under any circumstance.
-SHARESEQ_DATASET_CONTEXT = """\
+# Generic dataset context for any dataset whose SOURCE must stay anonymous
+# even though a determined real identity may not need to. Used for the
+# shareseq-multi-cell-lines dataset run, and it's the automatic DEFAULT
+# `checklist_generator.generate_checklist`/`novelty.propose_novel_findings`/
+# `novelty.judge_novel_findings` fall back to when no `dataset_context` is
+# passed at all -- so anyone plugging their own data into this pipeline never
+# needs to import or pass this constant themselves. Also near-empty for the
+# same reason as PBMC_DATASET_CONTEXT -- but with one genuinely different,
+# non-identity-revealing OUTPUT POLICY the tenx-cell-ranger context doesn't
+# need: once the agent has determined a real cell-line identity from
+# evidence, that name may appear in its answer (a deliberate, explicit
+# exception to this project's default anonymization convention), but nothing
+# about the data's SOURCE ever may -- no file paths, project names, or
+# lab/institution names, under any circumstance.
+OWN_DATA_CONTEXT = """\
 No additional dataset-specific background is provided for this run beyond \
 what the tools return -- you have not been told what cell line(s), tissue \
 lineage, or condition(s) this sample contains. Determine that from evidence \

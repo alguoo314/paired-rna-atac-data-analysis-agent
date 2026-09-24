@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from multiome_agent.agent.loop import TOOLS, AgentRunResult, run_agent
+from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
 from multiome_agent.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -106,11 +107,17 @@ class ChecklistItem:
 
 
 def generate_checklist(
-    mdata, qc_summary: str, dataset_context: str, model: str | None = None, max_turns: int = 60
+    mdata, qc_summary: str, dataset_context: str | None = None, model: str | None = None, max_turns: int = 60
 ) -> tuple[list[ChecklistItem], AgentRunResult]:
+    """`dataset_context` defaults to `OWN_DATA_CONTEXT` -- the right choice for
+    arbitrary data, since it lets the agent name a real identity it determines
+    (e.g. a cell line) while still forbidding it from ever naming the data's
+    source. Callers running the PBMC report pass `PBMC_DATASET_CONTEXT`
+    explicitly instead, since that dataset has no cell-line identity to name.
+    """
     result = run_agent(
         CHECKLIST_QUESTION, model=model, max_turns=max_turns, mdata=mdata, qc_summary=qc_summary,
-        tools=CHECKLIST_TOOLS, dataset_context=dataset_context,
+        tools=CHECKLIST_TOOLS, dataset_context=dataset_context if dataset_context is not None else OWN_DATA_CONTEXT,
     )
     all_items = [
         ChecklistItem(**tc["input"])

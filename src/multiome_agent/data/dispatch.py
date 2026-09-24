@@ -9,7 +9,7 @@ from __future__ import annotations
 from mudata import MuData
 
 from multiome_agent.agent.loader_selector import LoaderDecision, decide_loading_strategy
-from multiome_agent.config import SHARESEQ_ATAC_H5AD, SHARESEQ_RNA_H5AD, SHARESEQ_RNA_HVG_H5AD
+from multiome_agent.config import SHARESEQ_ATAC_H5AD, SHARESEQ_RNA_H5AD, SHARESEQ_RNA_HVG_H5AD, TENX_MATRIX_H5
 from multiome_agent.data.loader import MATRIX_H5, load_pbmc_multiome
 from multiome_agent.data.shareseq_loader import load_shareseq_multiome
 from multiome_agent.logging_utils import get_logger
@@ -79,3 +79,27 @@ def load_fixed_core_via_agent_decision(source: str, model: str | None = None) ->
         source, decision.strategy, mdata.n_obs,
     )
     return mdata, decision
+
+
+def load_fixed_core_from_local_config(model: str | None = None) -> tuple[MuData, LoaderDecision]:
+    """Generic entry point for your own data -- no `source` argument, and no
+    need to know or type this project's internal 'tenx-cell-ranger' /
+    'shareseq-multi-cell-lines' strings, which exist to pick between this
+    project's own two example-report pipelines, not as a name for your data.
+
+    Auto-detects which `config/local_paths.yaml` slot you actually
+    populated -- the separate `shareseq_rna_h5ad` + `shareseq_atac_h5ad`
+    pair, or a single combined `tenx_matrix_h5` -- and loads accordingly.
+    Everything else (which loading strategy actually applies, given your
+    files' real structure) is still decided by the agent, same as
+    `load_fixed_core_via_agent_decision`.
+    """
+    if SHARESEQ_RNA_H5AD and SHARESEQ_ATAC_H5AD:
+        return load_fixed_core_via_agent_decision("shareseq-multi-cell-lines", model=model)
+    if TENX_MATRIX_H5:
+        return load_fixed_core_via_agent_decision("tenx-cell-ranger", model=model)
+    raise ValueError(
+        "No local data configured in config/local_paths.yaml. Set either "
+        "shareseq_rna_h5ad + shareseq_atac_h5ad (separate per-modality files) "
+        "or tenx_matrix_h5 (a single combined file) to point at your own data."
+    )

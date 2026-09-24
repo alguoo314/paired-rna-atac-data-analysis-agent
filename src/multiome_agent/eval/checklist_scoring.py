@@ -1,6 +1,6 @@
 """Scores the fixed-core pipeline's output against the known-biology
 checklist (`eval/checklists/pbmc_known_biology.yaml`, written as ground
-truth before any of this scoring code existed -- see PROGRESS.md step 6a).
+truth before any of this scoring code existed -- see PROGRESS.md step 7).
 
 Every recovered/not-recovered verdict carries the actual computed numbers
 behind it (rho, p-value, which cluster, etc.), not just a bare boolean --

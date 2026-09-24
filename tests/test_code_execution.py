@@ -1,4 +1,4 @@
-"""Tests for the local sandboxed code-execution tool (Stretch phase, Part B:
+"""Tests for the local sandboxed code-execution tool (step 15, Part B:
 agent-written analysis code). Security-relevant: the denial tests matter as
 much as the happy path.
 """

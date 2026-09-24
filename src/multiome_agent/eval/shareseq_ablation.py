@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from multiome_agent.agent.loop import run_agent
 from multiome_agent.agent.shareseq_qc_summary import format_shareseq_qc_summary, shareseq_fixed_core_summary
-from multiome_agent.agent.prompts import SHARESEQ_DATASET_CONTEXT
+from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
 
 QUESTION = (
     "This is a pooled multi-cell-line single-cell multiome dataset. Using the QC summary "
@@ -32,7 +32,7 @@ def run_ablation(mdata, model: str | None = None) -> dict:
     qc_summary_text = format_shareseq_qc_summary(summary)
 
     agent_result = run_agent(
-        QUESTION, model=model, mdata=mdata, qc_summary=qc_summary_text, dataset_context=SHARESEQ_DATASET_CONTEXT
+        QUESTION, model=model, mdata=mdata, qc_summary=qc_summary_text, dataset_context=OWN_DATA_CONTEXT
     )
 
     return {

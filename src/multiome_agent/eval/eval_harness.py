@@ -1,6 +1,6 @@
 """Ties the fault injector to a real agent quality judgment, scored against
 ground truth. Originally built for a per-model Haiku eval + a 4-model
-comparison table (Day 2 step 7); that comparison table is retired (see
+comparison table (step 10); that comparison table is retired (see
 CLAUDE.md's Evaluation §8) in favor of the comprehensive report
 (`agent/report_generator.py`), which reuses `build_scenarios`/`_run_scenario`
 directly, one run per scenario, no consistency repeats. `run_model_eval`
@@ -11,7 +11,7 @@ Design choice: every scenario's `run_agent` call gets the CLEAN
 `agent_fixed_core_mdata` as `mdata` (so `tf_motif_correlation`/`enrich_gene_set`
 keep working sensibly -- none of the 3 faults modify the peak count matrix or
 chromVAR deviations those tools read from) but a scenario-specific
-`qc_summary` composed from step 5's already-validated `score_*` deltas. Only
+`qc_summary` composed from step 6's already-validated `score_*` deltas. Only
 `get_qc_summary`'s output differs per scenario; the agent has to actually
 call that tool and read real numbers to notice anything, not have numbers
 smuggled into the system prompt where they'd escape the grounding check.

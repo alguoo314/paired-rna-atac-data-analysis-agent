@@ -181,7 +181,7 @@ def compute_shareseq_gene_activity(mdata: MuData) -> MuData:
     `gene_activity.compute_gene_activity_from_peaks`) -- the tenx-cell-ranger
     pipeline's fragments-based `compute_gene_activity` can't run here (no
     fragments file for this data, only a peak-count matrix; see
-    PROGRESS.md's Stretch-phase entry), but the underlying gene-window
+    PROGRESS.md's step 19 entry), but the underlying gene-window
     reference (`snap.genome.hg38.annotation`) is genome-build data, not
     dataset-derived, so it's reused as-is -- no new download needed, only
     the same genome-build sanity check `compute_shareseq_motif_deviations`

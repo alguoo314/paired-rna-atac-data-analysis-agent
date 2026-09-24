@@ -3,7 +3,7 @@
 Cheap unit tests (ground truth correctness, shapes) run unconditionally.
 Tests that check a fault actually shifts fixed-core numbers reuse the
 session-scoped `agent_fixed_core_mdata` fixture (n=500, already computed and
-cached from Day 1 -- see conftest.py) rather than paying for a fresh
+cached from steps 1-5 -- see conftest.py) rather than paying for a fresh
 ~17-minute fixed-core run, and budget real snapatac2 reruns carefully
 (downsampling needs one; shuffled-pairing and doublets don't).
 """

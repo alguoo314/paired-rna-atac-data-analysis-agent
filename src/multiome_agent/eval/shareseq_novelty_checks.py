@@ -17,7 +17,7 @@ from mudata import MuData
 
 from multiome_agent.agent.loop import run_agent
 from multiome_agent.agent.shareseq_qc_summary import format_shareseq_qc_summary, shareseq_fixed_core_summary
-from multiome_agent.agent.prompts import SHARESEQ_DATASET_CONTEXT
+from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
 from multiome_agent.core.shareseq_pipeline import run_shareseq_fixed_core
 from multiome_agent.data.shareseq_loader import load_shareseq_multiome
 from multiome_agent.eval.grounding import check_grounding
@@ -45,7 +45,7 @@ def split_cells_in_half(mdata: MuData, seed: int = 0) -> tuple[list[str], list[s
 
 def _run_novelty_investigation(label: str, mdata_for_tools: MuData, qc_text: str) -> dict:
     result = run_agent(
-        NOVELTY_QUESTION, mdata=mdata_for_tools, qc_summary=qc_text, dataset_context=SHARESEQ_DATASET_CONTEXT
+        NOVELTY_QUESTION, mdata=mdata_for_tools, qc_summary=qc_text, dataset_context=OWN_DATA_CONTEXT
     )
     grounding = check_grounding(result)
     return {

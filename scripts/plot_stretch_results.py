@@ -1,8 +1,8 @@
-"""Stretch-phase results plot: cell-line-label-swap fault severity vs. the
-pipeline's cell-line-recovery ARI, on the private multi-cell-line dataset.
+"""Private multi-cell-line results plot: cell-line-label-swap fault severity
+vs. the pipeline's cell-line-recovery ARI, on the private multi-cell-line dataset.
 
-Real numbers hardcoded from PROGRESS.md's "Stretch -- Private data:
-cell-line/mixed-sample fault types" section (the fault-injection functions
+Real numbers hardcoded from PROGRESS.md's "Step 14: Private data:
+cell-line/mixed-sample fault types + ablation study" section (the fault-injection functions
 that produced them need the private dataset locally to rerun, which most
 readers of this repo won't have -- this script plots the already-verified,
 committed numbers rather than requiring a rerun). Statistics only, no

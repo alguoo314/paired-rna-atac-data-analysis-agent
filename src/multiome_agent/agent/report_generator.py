@@ -20,7 +20,7 @@ from pathlib import Path
 
 from multiome_agent.agent.checklist_generator import ChecklistItem, generate_checklist
 from multiome_agent.agent.novelty import JudgedFinding, check_novelty_negative_control, judge_novel_findings, propose_novel_findings
-from multiome_agent.agent.prompts import PBMC_DATASET_CONTEXT, SHARESEQ_DATASET_CONTEXT
+from multiome_agent.agent.prompts import PBMC_DATASET_CONTEXT, OWN_DATA_CONTEXT
 from multiome_agent.config import REPO_ROOT
 from multiome_agent.data.dispatch import load_fixed_core_via_agent_decision
 from multiome_agent.logging_utils import get_logger
@@ -340,7 +340,7 @@ def generate_report(source: str, model: str, out_path: Path | None = None) -> di
     from multiome_agent.core.condition_detection import detect_condition_groups
 
     cost = ReportCost()
-    dataset_context = PBMC_DATASET_CONTEXT if source == "tenx-cell-ranger" else SHARESEQ_DATASET_CONTEXT
+    dataset_context = PBMC_DATASET_CONTEXT if source == "tenx-cell-ranger" else OWN_DATA_CONTEXT
 
     mdata, loader_decision = load_fixed_core_via_agent_decision(source, model=model)
     cost.add("loader_decision", loader_decision.cost_usd)
