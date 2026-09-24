@@ -54,10 +54,11 @@ The flagship output is one comprehensive report per dataset, generated end to en
    only makes the checklist if both steps pass; if step 2 fails, the agent tries a different
    candidate instead of forcing it. Aims for 3 verified claims per category (RNA markers, motifs,
    TF-expression-tracks-motif-accessibility).
-4. **Fault-injection eval** — corrupted-data scenarios (shuffled RNA-ATAC pairing, downsampling,
-   injected doublets, dataset-specific label faults) run across four Claude models (Haiku, Sonnet,
-   Opus, Fable) side by side, with a grounding checker verifying every cited number/PMID traces
-   back to a real tool call from that same run.
+4. **Fault-injection eval** — corrupted-data scenarios (shuffled RNA-ATAC pairing on both
+   datasets, plus ATAC downsampling and injected doublets on the public data or a cell-line label
+   swap on the private data) run across four Claude models (Haiku, Sonnet, Opus, Fable) side by
+   side, with a grounding checker verifying every cited number/PMID traces back to a real tool
+   call from that same run.
 5. **Novel findings** — candidate discoveries beyond the checklist, each cross-examined by an
    adversarial Judger agent for artifacts and prior art, plus a negative control against
    fully-shuffled data to check for hallucination.
@@ -167,16 +168,15 @@ standalone against any same-cell RNA+ATAC data:
    ```python
    from multiome_agent.eval.shareseq_eval_harness import build_shareseq_scenarios, run_shareseq_model_eval
 
-   scenarios = build_shareseq_scenarios(mdata)  # clean control + cell-line-swap + mixed-samples + shuffled-pairing
+   scenarios = build_shareseq_scenarios(mdata)  # clean control + cell-line-swap + shuffled-pairing
    result = run_shareseq_model_eval("claude-opus-5", scenarios, mdata)
    print(f"${result['total_cost_usd']:.4f} total")
    for r in result["scenario_results"]:
        print(r["fault_type"], "detected=", r["detected"], "diagnosis_matches=", r["diagnosis_matches"])
    ```
-   `build_shareseq_scenarios` assumes your data has the same `cell_line_name`/`library` columns
-   the cell-line-swap and mixed-samples faults need — if it doesn't, `shuffle_rna_atac_pairing`
-   (also used to build the shuffled-pairing scenario) still works standalone against any
-   same-cell RNA+ATAC data.
+   `build_shareseq_scenarios` assumes your data has a `cell_line_name` column for the
+   cell-line-swap fault — if it doesn't, `shuffle_rna_atac_pairing` (also used to build the
+   shuffled-pairing scenario) still works standalone against any same-cell RNA+ATAC data.
 
 ---
 

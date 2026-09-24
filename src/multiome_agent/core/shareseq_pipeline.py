@@ -40,9 +40,9 @@ def run_shareseq_qc(mdata: MuData) -> MuData:
     rna, atac = mdata.mod["rna"], mdata.mod["atac"]
     logger.info(
         "Shareseq RNA QC (precomputed, reused as-is): median genes/cell=%.0f, "
-        "median UMIs/cell=%.0f, median pct_mt=%.2f, doublet rate=%.3f",
+        "median UMIs/cell=%.0f, median pct_mt=%.2f",
         rna.obs["n_genes_by_counts"].median(), rna.obs["total_counts"].median(),
-        rna.obs["pct_counts_mt"].median(), (rna.obs["rna_doublet_class"] == "doublet").mean(),
+        rna.obs["pct_counts_mt"].median(),
     )
     logger.info(
         "Shareseq ATAC QC (precomputed, reused as-is): median fragments/cell=%.0f, "

@@ -42,7 +42,7 @@ def test_rna_hvg_is_gene_subset_of_all_genes(shareseq_mdata):
 
 def test_expected_precomputed_qc_columns_present(shareseq_mdata):
     rna_obs = shareseq_mdata.mod["rna"].obs.columns
-    for col in ["total_counts", "pct_counts_mt", "cell_line_name", "rna_doublet_class"]:
+    for col in ["total_counts", "pct_counts_mt", "cell_line_name"]:
         assert col in rna_obs
     atac_obs = shareseq_mdata.mod["atac"].obs.columns
     for col in ["n_fragment", "frip", "tsse", "cell_line_name"]:

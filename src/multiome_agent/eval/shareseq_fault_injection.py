@@ -1,8 +1,9 @@
-"""The two fault types the tenx-cell-ranger dataset couldn't exercise (single
-sample, no cell-line/library structure) -- now buildable against the
-shareseq-multi-cell-lines data. Same `FaultMetadata` convention as
-`fault_injection.py`. Per CLAUDE.md's data-handling rules for this dataset,
-ground truth is stored with cell-line/library identities anonymized to
+"""The cell-line-label fault the tenx-cell-ranger dataset couldn't exercise
+(single sample, no cell-line structure) -- now buildable against the
+shareseq-multi-cell-lines data, plus that dataset's own analog of
+`fault_injection.py`'s RNA-ATAC pairing shuffle. Same `FaultMetadata`
+convention as `fault_injection.py`. Per CLAUDE.md's data-handling rules for
+this dataset, ground truth is stored with cell-line identities anonymized to
 letters (A, B, C...), never the real strings -- even in-memory metadata
 objects returned by these functions stay safe to print/log by construction,
 not just "don't print them."
@@ -99,40 +100,4 @@ def shuffle_rna_atac_pairing(mdata: MuData, fraction: float, seed: int = 0) -> t
         fault_type="shuffled_rna_atac_pairing", severity=fraction,
         description=f"{n_actually_shuffled}/{n} cells have their ATAC profile swapped with another cell's.",
         ground_truth={"n_shuffled": n_actually_shuffled},
-    )
-
-
-def mix_samples(mdata: MuData, seed: int = 0) -> tuple[MuData, FaultMetadata]:
-    """Pick two distinct real sequencing libraries and relabel one's cells
-    to claim the other's library identity -- simulating two independent
-    libraries being merged/mislabeled as a single sample. A genuinely
-    different failure mode from `swap_cell_line_labels`: per-cell
-    genotype-based cell-line identity is untouched here; what's wrong is
-    which cells count as belonging to the same technical batch/sample.
-    """
-    rng = np.random.default_rng(seed)
-    library_col = mdata.mod["rna"].obs["library"]
-    libraries = sorted(library_col.unique().tolist())
-    lib_a, lib_b = rng.choice(libraries, size=2, replace=False)
-    anon = _anonymize([lib_a, lib_b])
-
-    is_b = (library_col == lib_b).to_numpy()
-    faulted = mdata.copy()
-    for mod in SHARESEQ_MODALITIES:
-        obs = faulted.mod[mod].obs
-        mask = (obs["library"] == lib_b).to_numpy()
-        obs.loc[mask, "library"] = lib_a
-        obs.loc[mask, "sample"] = lib_a
-
-    n_mixed = int(is_b.sum())
-    return faulted, FaultMetadata(
-        fault_type="mixed_samples", severity=n_mixed / mdata.n_obs,
-        description=(
-            f"{n_mixed} cells from a second sequencing library (anonymized '{anon[lib_b]}') "
-            f"relabeled to appear part of a different sample ('{anon[lib_a]}')."
-        ),
-        ground_truth={
-            "mixed_cell_positions": [int(i) for i in np.where(is_b)[0]],
-            "true_library_anonymized": {"kept_identity": anon[lib_a], "mislabeled_into_it": anon[lib_b]},
-        },
     )

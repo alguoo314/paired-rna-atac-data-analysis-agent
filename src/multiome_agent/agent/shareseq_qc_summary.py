@@ -28,7 +28,6 @@ def shareseq_fixed_core_summary(mdata) -> dict:
         "median_genes_per_cell": float(rna.obs["n_genes_by_counts"].median()),
         "median_umis_per_cell": float(rna.obs["total_counts"].median()),
         "median_pct_mt": float(rna.obs["pct_counts_mt"].median()),
-        "doublet_rate": float((rna.obs["rna_doublet_class"] == "doublet").mean()),
         "median_fragments_per_cell": float(atac.obs["n_fragment"].median()),
         "median_frip": float(atac.obs["frip"].median()),
         "median_tss_enrichment": float(atac.obs["tsse"].median()),
@@ -40,8 +39,7 @@ def format_shareseq_qc_summary(summary: dict) -> str:
         f"{summary['n_cells']} cells pooled from {summary['n_cell_lines']} distinct cell lines, "
         f"{summary['n_genes']} genes, {summary['n_peaks']} ATAC peaks (after feature filtering). "
         f"RNA: {summary['n_rna_clusters']} Leiden clusters, median {summary['median_genes_per_cell']:.0f} "
-        f"genes/cell, {summary['median_umis_per_cell']:.0f} UMIs/cell, {summary['median_pct_mt']:.1f}% mito, "
-        f"{summary['doublet_rate']:.1%} doublets (scrublet-based call). "
+        f"genes/cell, {summary['median_umis_per_cell']:.0f} UMIs/cell, {summary['median_pct_mt']:.1f}% mito. "
         f"ATAC: {summary['n_atac_clusters']} Leiden clusters, median {summary['median_fragments_per_cell']:.0f} "
         f"fragments/cell, median FRiP {summary['median_frip']:.2f}, median TSS enrichment "
         f"{summary['median_tss_enrichment']:.1f}. "

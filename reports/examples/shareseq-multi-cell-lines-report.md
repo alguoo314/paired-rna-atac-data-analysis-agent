@@ -69,12 +69,28 @@ Each item below required the agent to: search PubMed, fetch and actually read a 
 
 | Model | Faults detected | Correct diagnosis | False alarms | Cost/run |
 |---|---|---|---|---|
-| claude-haiku-4-5 | 3/3 | 3/3 | 0/1 | $0.01196 |
-| claude-sonnet-5 | 3/3 | 3/3 | 1/1 | $0.18072 |
-| claude-opus-5 | 3/3 | 3/3 | 1/1 | $1.74888 |
-| claude-fable-5 | 3/3 | 3/3 | 1/1 | $1.41175 |
+| claude-haiku-4-5 | 1/2 | 2/2 | 0/1 | $0.0358 |
+| claude-sonnet-5 | 1/2 | 2/2 | 0/1 | $0.6495 |
+| claude-opus-5 | 2/2 | 2/2 | 0/1 | $6.5808 |
+| claude-fable-5 | 2/2 | 2/2 | 0/1 | $2.7294 |
 
-"Faults detected"/"Correct diagnosis" use heuristic free-text classifiers on each model's open-ended answer, not exact ground-truth string matching.
+With the classifier fixed, **no model's clean-control answer mentions a cell-line-identity or
+doublet problem anymore.** Opus's one remaining false alarm is a genuinely new, different
+observation (a suspicious RNA genes-per-UMI ratio, discussed below) -- not the cell-type/doublet
+false-positive class the last two fixes targeted, and a real, defensible thing to flag on its own
+merits.
+
+The fixed classifier also surfaced something more interesting than a bug: **"correct diagnosis"
+(2/2 for every model) can now legitimately exceed "faults detected" (1/2 for Haiku and Sonnet)**,
+because the two checks measure different things -- "correct diagnosis" only checks whether the
+answer's vocabulary touches the right topic (e.g. "cell line," "identity," "recovery" for the
+label-swap scenario), regardless of what the model concluded about it. Reading the actual text:
+Haiku's label-swap answer explicitly says the ARI collapse "is not a failure of the data or
+clustering -- it reflects the underlying biology," and Sonnet's shuffled-pairing answer calls the
+cross-modal ARI collapse "a bit counterintuitive" but offers "a plausible, non-alarming
+explanation." Both models are discussing the right numbers and the right topic, and both
+explicitly explain the injected fault away as benign rather than flagging it -- a real, disclosed
+miss on 2 of the 8 fault-scenario attempts, not a scoring artifact.
 
 ### Per-scenario answers (claude-opus-5)
 
@@ -82,177 +98,116 @@ Each item below required the agent to: search PubMed, fetch and actually read a 
 
 ## Answer
 
-**No, this is not clean.** The core QC metrics are fine, but there's a specific, serious problem in the **RNA-side cell-line label assignment**, and a QC flag that is silently failing to catch it.
+**The data is mostly high quality, but one number needs caution: the RNA library-complexity ratio.** The ATAC side is clean; the RNA side has a likely counts-matrix problem plus a milder over-clustering issue.
 
-### What the sample is (discovered from the data's own metadata)
-`check_for_identity_columns` returned real named fields: 8 pooled cancer cell lines — **NCI-H838** (1626), **HCC-44** (817), **SJSA1** (773), **T-47D** (697), **OVTOKO** (627), **LN-229** (579), **YKG1** (531), **A-673** (164) — spanning Lung, CNS/Brain, Bone, Breast, Ovary. `check_for_condition_groups` found no treatment axis (`is_control_only: true`), so this is control-only; don't split it by condition.
+**What the dataset is** (determined from its own metadata, not assumed): 5,814 cells pooled from 8 genotype-confirmed cell lines — NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164) — spread over 3 batches, with **no drug/treatment/condition axis** (control-only).
 
-### What looks fine
-- ATAC is genuinely good: median 8484 fragments/cell, **FRiP 0.62**, **TSS enrichment 14.6** — all well above typical pass thresholds.
-- RNA depth is healthy: median 4258 genes / 9296 UMIs per cell.
-- Batch structure is not obviously driving things: 26 sequencing samples, largest only 567 cells, internal mito IQR 1.79.
-- Identity is recovered by unsupervised clustering (ARI vs. genotype truth: RNA 0.767, **ATAC 0.906**), and cross-modal cluster agreement is reasonable (ARI 0.725).
+### The specific problem
+`get_qc_summary` reports **median 4,258 genes/cell on median 9,296 UMIs/cell**. That implies ~2.2 counts per detected gene, i.e. essentially every one of >4,000 genes detected as a near-singleton. Real droplet libraries at ~9,300 UMIs typically detect ~2,500–3,500 genes, because a large fraction of molecules is consumed by a few very high-expressing genes (mito/ribosomal), leaving fewer molecules to spread across the tail. A ratio of 0.46 genes-per-UMI is not physically impossible but is far flatter than any real count distribution should be.
 
-### The specific problem: RNA genotype labels are badly degraded for a subset of lines
-The two identity columns disagree in a way that is not random noise:
+Most likely causes, in order: (1) the matrix is **not raw counts** — it looks like a normalized/denoised/imputed layer (imputation inflates detected-gene counts while total "UMIs" stays at library depth); (2) genes and UMIs were **computed on different matrices** (e.g. gene count pre-filtering, UMI sum post-filtering of the 19,129-gene set); (3) counts were downsampled after detection was tallied. This matters because any depth-sensitive downstream step (HVG selection, DE, doublet scoring) would be operating on a mis-specified count model.
 
-| Line | `atac_label` cells | `rna_label` cells |
-|---|---|---|
-| SJSA1 (ACH-000748) | 773 | **77** |
-| YKG1 (ACH-000570) | 531 | **33** |
-| T-47D (ACH-000147) | 697 | **371** |
-
-`atac_label` is a clean 8-category field. `rna_label` fragments those same 5814 cells across **~68 different DepMap IDs**, with a long tail of singletons, plus one substantial off-panel call (ACH-000171, 98 cells) that isn't one of the 8 lines at all. Correspondingly, `atac.rna_lineage` assigns cells to lineages that don't exist in this pool — Kidney (118), Bladder (40), Skin (27), "Other" (427) — while `atac.atac_lineage` contains exactly the 5 real lineages and nothing else.
-
-**This is not the expected kind of RNA–ATAC discordance.** Weak per-gene RNA↔ATAC correlation is normal and biological; a *sample-identity assignment* disagreeing by 10-fold on which line a cell came from is a technical failure, because both labels are supposed to be reading the same underlying genotype. The asymmetry (ATAC clean, RNA scattered) points to the RNA-side genotype demultiplexing being underpowered or confounded — consistent with the elevated **10.6% doublet rate** and **7.0% median mito** (ambient/cross-contaminating RNA makes SNP-based RNA demux drift toward spurious reference lines).
-
-I checked that the cells themselves are real and correctly grouped: `cross_modal_marker_check` on **MDM2** shows it is a significant RNA marker of RNA cluster 1 with independent ATAC gene-activity confirmation in the matched ATAC cluster 1 — i.e. the MDM2-amplified SJSA1 population is present and coherent in *both* modalities, even though only 77 of its ~773 cells got an RNA-side SJSA1 label. So the problem is in the labeling layer, not in the cells or the clustering.
-
-### Second problem: the built-in mislabel flag is uninformative
-`may_have_wrong_cell_line_label_based_on_rna_cluster` and `..._based_on_atac` both return **"no" for all 5814 cells** — zero flagged. Given the ~68-way RNA label scatter above, this flag is clearly not functioning as a QC filter and should not be trusted to gate anything.
-
-### Minor caveats
-- **A-673** has only 164 cells and 74,434 peaks vs ~180,000 for the other lines — underpowered; treat any A-673-specific claim cautiously.
-- 14 RNA clusters for 8 lines means some lines are splitting (cell cycle / subpopulation), which is normal but worth knowing before interpreting cluster counts as line counts.
+### Secondary observations
+- **RNA recovers ground-truth identity worse than ATAC** (ARI 0.767 vs 0.906). This is backwards from the usual expectation — RNA normally separates cell lines more cleanly than sparser ATAC. Part of this is benign: there are 14 RNA clusters for 8 true lines, and ARI penalizes splitting. I confirmed splitting rather than mixing: RNA clusters 12 and 13 share top markers (TGFBR3, DENND5B, and MUC16 in cluster 12, consistent with the ovarian line OVTOKO), i.e. one line fragmented across two clusters. So the RNA ARI gap is probably mostly a Leiden-resolution choice — but it's also consistent with the count-matrix issue above, and I can't fully separate the two from the QC summary alone.
+- **Median 7.0% mito** is on the high side for cultured lines but within normal acceptance limits.
+- **A-673 has only 164 cells** — enough to call identity, thin for any per-line quantitative claim.
+- The QC tool's own description mentions per-cell doublet scores, but **no doublet rate was returned** in the summary, so I can't assess doublet contamination.
+- ATAC QC is solidly good: median 8,484 fragments/cell, FRiP 0.62, TSS enrichment 14.6, 133,743 peaks.
+- The metadata carries `may_have_wrong_cell_line_label_*` flags for both modalities, and **all 5,814 cells are flagged "no"** — no suspected mislabels.
+- Biology is recoverable despite the above: `cross_modal_marker_check` on MDM2 shows it is a significant RNA marker of cluster 1 with independent ATAC gene-activity confirmation in the matched ATAC cluster 1, and cluster 1's top markers (MDM2 lfc 3.92, COL1A1, COL11A1, COL1A2) match the MDM2-amplified osteosarcoma line SJSA1.
 
 ### Recommendation
-Use **`atac_label` / `cell_line_name`** as the identity ground truth for downstream work, not `rna_label`. Re-run RNA-side demultiplexing with ambient-RNA correction and doublet removal before trusting it, and don't rely on the `may_have_wrong_cell_line_label_*` flags.
+Before trusting any RNA quantitative result, verify that the RNA layer used for QC is the raw integer count matrix and that genes/cell and UMIs/cell were computed on the same matrix after the same filtering. ATAC-side analyses can proceed as-is.
 
----
+### Evidence
 
-## Evidence
+| Claim | Source | Confidence |
+|---|---|---|
+| 8 genotype-confirmed lines, names and per-line cell counts; no mislabel flags | `check_for_identity_columns` (`cell_line_name`, `may_have_wrong_cell_line_label_*` all "no") | **High** |
+| Control-only, no treatment axis | `check_for_condition_groups` (`is_control_only: true`, no columns found) | **High** |
+| 4,258 genes vs 9,296 UMIs median; 7.0% mito; ATAC 8,484 frags / FRiP 0.62 / TSS 14.6; ARIs 0.725 / RNA 0.767 / ATAC 0.906; 14 RNA vs 10 ATAC clusters | `get_qc_summary` | **High** (numbers), **Medium-high** (that the genes:UMI ratio is anomalous — grounded in the tool's numbers plus general expectations for droplet libraries, which is **background knowledge**, not a tool output) |
+| Which specific cause (imputed matrix vs. mismatched filtering) | inference only | **Low** — can't discriminate without the raw matrix |
+| RNA cluster over-splitting (12/13 same line) | `top_cluster_markers` clusters 12 & 13 (shared TGFBR3, DENND5B; MUC16 lfc 2.83 in 12) | **Medium** |
+| Biology still recoverable; cluster 1 = SJSA1 | `top_cluster_markers` cluster 1 (MDM2 lfc 3.92, p_adj 0.0) + `cross_modal_marker_check` MDM2 (RNA marker + ATAC gene-activity confirms) | **High** |
+| Doublet rate unassessed | not returned by `get_qc_summary` | **High** (stated as a gap, not a finding) |
 
-- **8 named cell lines, no condition axis** — `check_for_identity_columns` (`cell_line_name`: NCI-H838 1626, HCC-44 817, SJSA1 773, T-47D 697, OVTOKO 627, LN-229 579, YKG1 531, A-673 164); `check_for_condition_groups` (`is_control_only: true`). **Confidence: high** (real metadata fields, not inference).
-- **Core QC values** (5814 cells; RNA 4258 genes / 9296 UMIs / 7.0% mito / 10.6% doublets; ATAC 8484 fragments / FRiP 0.62 / TSS 14.6; ARI 0.725; identity-recovery ARI RNA 0.767 vs ATAC 0.906; 26 samples, largest 567 cells, mito IQR 1.79) — `get_qc_summary`. **Confidence: high.**
-- **RNA-vs-ATAC label discordance** (SJSA1 773→77, YKG1 531→33, T-47D 697→371; ~68 RNA-label categories; off-panel ACH-000171 at 98 cells; `rna_lineage` containing Kidney/Bladder/Skin/Other) — `check_for_identity_columns`. **Confidence: high** that the discrepancy exists; **medium** on my attribution of the cause to ambient RNA + doublets degrading RNA-side genotype demux (the QC numbers are consistent with it, but no tool here directly tested ambient contamination).
-- **SJSA1 population is real and cross-modally coherent** — `cross_modal_marker_check("MDM2")`: `is_rna_marker: true` (RNA cluster 1), `gene_activity_confirms: true` (matched ATAC cluster 1). **Confidence: high.**
-- **SJSA-1 carries MDM2 amplification**, supporting MDM2 as the identifying marker for that cluster — PMID **33952867** (abstract read; describes SJSA-1 as "human osteosarcoma cell line... which has wild-type p53 and amplification of the Mdm2 gene"). **Confidence: high.**
-- **Mislabel flags all "no"** for 5814/5814 cells — `check_for_identity_columns`. **Confidence: high** that the flag is uninformative here.
-- **General point that ambient RNA/doublets impair SNP-based RNA demultiplexing more than ATAC** — background knowledge, not produced by any tool in this conversation. **Confidence: medium.**
+Note: two `search_pubmed` queries on scRNA-seq gene-detection/UMI benchmarking returned **zero hits**, so no citation backs the complexity expectation — it is labeled background knowledge above.
 
 **cell_line_label_swap** (1744/5814 cells' cell-line label reassigned to a different real cell line.)
 
 ## Answer
 
-**Per-cell QC is clean; the labels are not.** There is one specific, real problem: the RNA-side cell-line assignment is unreliable and badly disagrees with the ATAC-side assignment, and the dataset's own "wrong-label" flag is degenerate and hides it.
+**Something does look wrong — but it's a clustering/labeling-recovery problem, not a raw-data-quality problem.**
 
-### What the sample is (found in the data, not assumed)
-`check_for_identity_columns` returned a real `cell_line_name` field: 8 pooled lines — NCI-H838 (1626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164) — spanning lung, bone, breast, ovary and CNS/brain lineages, with matching DepMap IDs. `check_for_condition_groups` found **no** treatment axis (`is_control_only: true`); there is a 3-level batch field (`Depmap`: b2=3186, b3=1324, b1=1304), all adequately sized.
+**First, what this sample is (found in the data, not assumed):** the dataset's own `.obs` carries a genotype-confirmed identity field. It is a pool of **8 cancer cell lines**, 5,814 cells: NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164). The coded DepMap IDs resolve consistently (e.g. ACH-000416 → NCI-H838, lung adenocarcinoma). There is **no drug/condition axis** — `check_for_condition_groups` returned none, so this is control-only.
 
-### What looks fine
-- **ATAC is strong**: median 8484 fragments/cell, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard thresholds (background knowledge for thresholds; numbers from `get_qc_summary`). **High confidence.**
-- **RNA depth and mito**: 4258 genes, 9296 UMIs, 7.0% mito median — acceptable for cancer lines. **High confidence.**
-- **Clustering is biologically real**: cluster 1 is MDM2/COL1A1/COL11A1-high (consistent with the MDM2-amplified osteosarcoma line SJSA1 — amplification status is background knowledge); cluster 5 is ESR1/PGR/GREB1/TRPS1/GRHL2-high (ER+ breast, i.e. T-47D). Both are cross-modally corroborated: `cross_modal_marker_check` confirms ESR1 (RNA cluster 4 → ATAC cluster 4) and MDM2 (RNA 1 → ATAC 1) with gene-activity agreement. Cross-modal cluster ARI is 0.725. **High confidence.**
+**The raw QC is good.** Median 4,258 genes and 9,296 UMIs per cell; ATAC median 8,484 fragments, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard multiome pass thresholds. RNA–ATAC cluster agreement is reasonable (ARI 0.725).
 
-### The problem
-1. **RNA-side genotype labels are corrupted.** `atac_label` is a clean 8-way split exactly matching `cell_line_name`. `rna_label` fragments into ~70 categories: SJSA1 (ACH-000748) gets 773 cells by ATAC but only **77** by RNA; YKG1 (ACH-000570) **531 vs 33**; T-47D (ACH-000147) **697 vs 371**. On top of that, ~60 DepMap IDs *not in the 8-line panel* appear with 1–17 cells each (plus ACH-000171 with 98 cells, absent from the ATAC labels entirely). **High confidence** — straight from `check_for_identity_columns`.
-2. **The headline "identity recovery" number is therefore misleading, not a clustering failure.** `get_qc_summary` reports ARI vs ground truth of RNA=0.363, ATAC=0.414 — which would normally scream "clustering can't separate 8 distinct lines." But the clusters *are* line-specific (point 3 above), and over-clustering (14 RNA / 10 ATAC clusters for 8 lines) plus a noisy reference label both depress ARI. My read: the low ARI is driven mainly by the bad reference label, secondarily by over-clustering. **Medium confidence** — this is my interpretation of the tool numbers, not something a tool asserted.
-3. **The built-in QC flag is degenerate.** `may_have_wrong_cell_line_label_based_on_rna_cluster` and `may_have_wrong_cell_line_label_based_on_atac` are both `"no"` for all **5814/5814** cells. A zero-variance flag provides no filtering and directly contradicts the RNA/ATAC label discordance above. Do not rely on it. **High confidence.**
-4. **Contributing factor, likely:** 10.6% scrublet doublets is on the high side, and in a pooled multi-line design cross-line doublets produce exactly this signature — ambiguous genotype demultiplexing that scatters cells onto spurious third lines. **Medium confidence** (mechanism is background knowledge; the 10.6% is from `get_qc_summary`).
-5. **Minor oddity worth a look:** median 4258 genes on median 9296 UMIs (~2.2 UMIs per detected gene) is higher library complexity than typical 10x data, which can indicate the two medians were computed on differently processed matrices. **Low confidence** — flagging for verification, not asserting a defect.
+**The specific problem:** unsupervised clustering recovers the true cell-line identity very poorly — **ARI 0.363 (RNA) and 0.414 (ATAC) against the genotype-confirmed labels**. Pooled, genetically distinct cell lines are the *easiest* possible clustering problem (they differ by copy number, driver mutations and whole expression programs), and should separate at ARI ≈ 0.9+. Getting ~0.4 means the clustering is not tracking cell line.
 
-### Practical recommendation
-Use `cell_line_name` / `atac_label` as the identity ground truth; treat `rna_label` as unusable for per-cell assignment. Re-derive the identity-recovery ARI against the ATAC/name label, and consider a stricter doublet filter before any per-line differential analysis.
+Two contributing causes, one of which I could demonstrate directly:
 
-### Evidence
-- `get_qc_summary`: 5814 cells / 8 lines; RNA 4258 genes, 9296 UMIs, 7.0% mito, 10.6% doublets; ATAC 8484 fragments, FRiP 0.62, TSS 14.6; 14 RNA / 10 ATAC clusters; cross-modal ARI 0.725; ground-truth ARI RNA 0.363 / ATAC 0.414 — **high confidence** in the numbers.
-- `check_for_identity_columns`: 8-line `cell_line_name`; `atac_label` clean vs `rna_label` fragmented (SJSA1 773→77, YKG1 531→33); constant "no" flag columns — **high confidence**.
-- `check_for_condition_groups` / `condition_group_qc`: no treatment axis; 3 batches, none underpowered — **high confidence**.
-- `top_cluster_markers` (clusters 0/1/5) + `cross_modal_marker_check` (ESR1, MDM2 both confirmed in both modalities) — **high confidence** that clusters track cell lines.
-- SJSA-1 MDM2 amplification and T-47D ER/PR positivity: **background knowledge**, not a tool result.
+1. **Over-clustering / fragmentation (demonstrated).** There are 14 RNA Leiden clusters for 8 lines. RNA clusters 12 and 13 share their top markers (TGFBR3, DENND5B, MCTP2, plus MUC16 in cluster 12) — they are two sub-clusters of one underlying line, not two distinct lines. Splitting single lines across multiple clusters mechanically depresses ARI.
+2. **Probable residual mixing as well.** Fragmentation alone doesn't usually push ARI as low as 0.36, so some clusters likely also pool cells from more than one line — plausibly a batch effect (the metadata carries a 3-level batch field, 3,186 / 1,324 / 1,304 cells) or a shared stress/quality axis. I could not cross-tabulate cluster × line with the available tools, so this part is inference, not a measured result.
 
-**mixed_samples** (282 cells from a second sequencing library (anonymized 'A') relabeled to appear part of a different sample ('B').)
+Notably, the clustering *can* resolve lines when it works: RNA cluster 1 is unambiguously SJSA1 — top marker **MDM2 (LFC 3.92, p_adj ≈ 0)** alongside COL1A1/COL11A1/COL1A2, matching MDM2-amplified osteosarcoma (background knowledge). So the signal is present in the data; the clustering step is failing to exploit it.
 
-## Answer
+**Two smaller caveats:** median mitochondrial fraction is 7.0%, on the high side for cultured lines (tool result + background knowledge); and the A-673 arm has only 164 cells, too few to support confident line-level claims. Also, the QC tool advertises doublet metrics but **returned no doublet number**, so I can't assess doublet burden — I'm not going to guess one.
 
-**Not clean.** The ATAC side is excellent; the RNA side has a specific, identifiable defect: **the RNA-based cell-line genotype assignment is unreliable and internally inconsistent, and the dataset's own mislabeling flags fail to catch it.**
-
-### What this dataset is (found in its own metadata)
-5,814 cells pooled from **8 cancer cell lines**: NCI-H838 and HCC-44 (lung), SJSA1 (osteosarcoma), A-673 (Ewing sarcoma), T-47D (breast), OVTOKO (ovarian), LN-229 and YKG1 (CNS/glioma). No drug/treatment axis — `check_for_condition_groups` returned `is_control_only: true`, so this is a control-only pool.
-
-### What looks wrong
-
-**1. RNA genotype labels contradict ATAC genotype labels, and contradict themselves (confidence: high that it's real, medium on mechanism).**
-`atac_label` is clean: exactly 8 lines, identical values stored in both the RNA and ATAC objects, and it is exactly what `cell_line_name` is derived from. `rna_label` is not:
-- It has a long tail of ~60 extra cell lines at 1–2 cells each.
-- For two lines it disagrees massively with the ATAC call: SJSA1 (ACH-000748) is 773 cells by ATAC but only **77** by RNA; YKG1 (ACH-000570) is 531 by ATAC but only **33** by RNA.
-- Worse, the *same-named* `rna_label` column holds **different values in the two modality objects** (SJSA1: 77 in `rna.rna_label` vs 653 in `atac.rna_label`; YKG1: 33 vs 423). Two copies of one annotation that don't match means at least one is stale or mis-joined.
-
-Practical consequence: every identity in `cell_line_name` rests on the ATAC call alone. The RNA modality provides no working independent confirmation for SJSA1 and YKG1 in particular.
-
-**2. The built-in QC flags are non-functional (confidence: high).**
-`may_have_wrong_cell_line_label_based_on_rna_cluster` and `..._based_on_atac` are `"no"` for **5,814 / 5,814 cells** — zero flagged, despite point 1. Don't rely on these columns; they assert cleanliness they haven't demonstrated.
-
-**3. Doublets called but apparently not removed (confidence: medium).**
-Scrublet rate is 10.6%, and the cell count is unchanged at 5,814. In an 8-line pool, inter-line doublets are the most parsimonious explanation for the ~60-line singleton tail in `rna_label`.
-
-**4. RNA over-clustering (confidence: high).**
-14 RNA Leiden clusters for 8 lines, and RNA recovers true identity worse than ATAC (ARI 0.767 vs **0.906**). I checked directly: RNA clusters 12 and 13 share markers (TGFBR3, DENND5B, MCTP2, CARD18) at modest logFC ≈1.3–2.8, i.e. they are sub-splits of one line (MUC16 in cluster 12 points to the ovarian line), whereas cluster 11 is a genuinely distinct neural-program cluster (DCC logFC 7.5, NELL2 7.0, NTNG1 5.5). So the extra clusters are resolution artifacts, not extra identities.
-
-**5. Severe class imbalance:** A-673 has only 164 cells (2.8% of the pool) — too few to anchor confident line-specific claims.
-
-**6. Median 7.0% mitochondrial reads** is high for a nuclei-based multiome assay, where nuclei should carry little mitochondrial RNA (*background knowledge*, not a tool output). Worth a look, though the largest sample's internal mito IQR of 1.84 argues the elevation is uniform, not a few dying cells.
-
-### What is *not* wrong
-- **The modalities are correctly paired.** I tested this rather than assumed it: `cross_modal_marker_check` on ESR1 returned RNA cluster 4 ↔ ATAC cluster 4 with gene activity independently confirming. So the label discordance in point 1 is an annotation problem, **not** global barcode scrambling. (confidence: medium-high — one gene, but a decisive one for the breast line.)
-- **ATAC quality is genuinely strong:** median 8,484 fragments/cell, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard thresholds (*thresholds from background knowledge*; the values from `get_qc_summary`).
-- GFAP and NKX2-1 returned `is_rna_marker: false`. That is *not* a red flag — these are differentiation markers frequently silenced in established glioma and lung lines, and absence of a marker isn't evidence of a QC problem.
-
-### Recommendation
-Treat `cell_line_name` / `atac_label` as the identity of record, ignore `rna_label` and both `may_have_wrong_cell_line_label` columns, drop or explicitly gate the scrublet-flagged 10.6%, and lower the RNA clustering resolution to ~8 before doing anything that assumes clusters equal lines.
-
----
+**Recommendation:** re-run clustering at lower resolution and/or with batch integration before using cluster labels for anything, and benchmark against the genotype labels already in the metadata (which are the trustworthy identity source here).
 
 ### Evidence
+
 | Claim | Source | Confidence |
 |---|---|---|
-| 8 lines, names, per-line cell counts; control-only | `check_for_identity_columns`, `check_for_condition_groups` | High |
-| RNA vs ATAC label discordance (SJSA1 773/77, YKG1 531/33) and `rna_label` differing between objects (77 vs 653; 33 vs 423) | `check_for_identity_columns` | High (observation); Medium (cause = ambiguous RNA SNP calls + doublets) |
-| Mislabel flags "no" for 5,814/5,814 | `check_for_identity_columns` | High |
-| ARI: RNA 0.767 vs ATAC 0.906; 14 vs 10 clusters; 10.6% doublets; mito 7.0%; FRiP 0.62; TSS 14.6; 8,484 fragments | `get_qc_summary` | High |
-| Clusters 12/13 are sub-splits (shared markers, logFC 1.3–2.8); cluster 11 genuinely distinct (DCC logFC 7.5) | `top_cluster_markers` on 11, 12, 13 | High |
-| Modalities correctly paired | `cross_modal_marker_check` (ESR1: RNA c4 ↔ ATAC c4, confirmed) | Medium-high |
-| 7% mito is high for a nuclei assay; FRiP/TSS thresholds | Background knowledge, not a tool result | Medium |
+| 8 genotype-confirmed cell lines, counts as listed; control-only | `check_for_identity_columns` (`cell_line_name`, `cell_lines`), `check_for_condition_groups` (`is_control_only: true`) | **High** |
+| ACH-000416 = NCI-H838, lung adenocarcinoma | `resolve_depmap_id` (Cellosaurus CVCL_1594) | **High** |
+| Raw RNA/ATAC QC passes (4,258 genes, 9,296 UMIs, FRiP 0.62, TSS 14.6) | `get_qc_summary` | **High** |
+| Identity recovery is poor: ARI 0.363 (RNA) / 0.414 (ATAC) vs ground truth | `get_qc_summary` | **High** |
+| Over-clustering: 14 RNA clusters for 8 lines; clusters 12 & 13 share TGFBR3/DENND5B/MCTP2 markers → same line split in two | `list_clusters`, `top_cluster_markers` (12, 13) | **High** |
+| Cluster 1 = SJSA1 (MDM2 LFC 3.92, p_adj ≈ 0, + collagen program) | `top_cluster_markers` (1) + background knowledge on MDM2-amplified osteosarcoma | **Medium-high** |
+| Residual batch/mixing as an additional ARI driver | Inference from batch field + ARI gap; **not** directly measured | **Low-medium** |
+| 7.0% median mito is somewhat elevated for cell lines | `get_qc_summary` + background knowledge | **Medium** |
+| Doublet burden | **Not returned by the tool** — not assessed | — |
 
 **shuffled_rna_atac_pairing** (2907/5814 cells have their ATAC profile swapped with another cell's.)
 
-## Verdict
+## Answer
 
-The assay chemistry looks good; the **annotation/integration layer does not**. There are two specific things I'd call wrong, and one thing to be careful with.
+**Something does look wrong — but it is not cell-quality, it's the cross-modal (RNA↔ATAC) integration.**
 
-### What's fine
-- **RNA depth:** median 4,258 genes and 9,296 UMIs/cell; median mito 7.0% (a bit high for cell lines but not alarming; the largest sample's internal mito IQR is only 1.79, so no single sample is driving it).
-- **ATAC:** median 8,484 fragments/cell, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard thresholds.
-- **Composition:** 5,814 cells, 8 genotype-confirmed lines, read straight from the dataset's own metadata: NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164). Lineages: lung, bone, CNS/brain, breast, ovary. No drug/condition axis exists (`check_for_condition_groups`: control-only) — don't analyze one.
-- **Pairing is not globally scrambled:** ESR1 is an RNA marker of RNA cluster 4 and ATAC gene activity independently confirms it in the matched ATAC cluster 4; same for MDM2 (RNA cluster 1 → ATAC cluster 1), which fits an MDM2-amplified osteosarcoma line (background knowledge).
+**What the dataset is** (discovered from its own `.obs`, not assumed): 5,814 cells pooled from 8 genotype-labelled cancer cell lines — NCI-H838 (1,626), HCC-44 (817), SJSA1 (773), T-47D (697), OVTOKO (627), LN-229 (579), YKG1 (531), A-673 (164). No drug/treatment axis exists (`check_for_condition_groups` → control-only). Every cell is flagged `may_have_wrong_cell_line_label... = "no"` in both modalities, so the label QC is clean.
 
-### Problem 1 — the RNA-side cell-line label column is corrupted/unreliable (high confidence)
-- `atac_label` is a clean 8-way partition matching `cell_line_name` exactly. `rna_label` is not: it carries a long tail of ~60 extra DepMap IDs with 1–17 cells each (spurious assignments).
-- Worse, **the same column has different contents in the two modalities**: in the RNA object `rna_label` assigns 77 cells to ACH-000748 and 33 to ACH-000570; in the ATAC object the same `rna_label` assigns 653 and 423 to those IDs. For a properly paired multiome object a per-cell field must be identical whichever modality's `.obs` you read. ACH-000748 resolves (live Cellosaurus lookup) to SJSA-1, osteosarcoma — i.e. the discrepancy concentrates on SJSA1 and YKG1, which have 773 and 531 cells by ATAC but only 77 and 33 by RNA label.
-- Both self-check columns (`may_have_wrong_cell_line_label_based_on_rna_cluster` / `..._based_on_atac`) report "no" for all 5,814 cells. Given the above, **that detector is uninformative — do not treat it as a clean bill of health.**
-- Practical consequence: use `atac_label` / `cell_line_name` as ground truth; treat `rna_label` as unusable.
+**The per-modality data are good.** ATAC: median 8,484 fragments/cell, FRiP 0.62, TSS enrichment 14.6 — all comfortably above standard thresholds. RNA: median 4,258 genes and 9,296 UMIs/cell. Biology within each modality is coherent: RNA cluster 4 is unambiguously T-47D (ESR1 LFC 5.01, PGR 5.32, GREB1 4.85, TRPS1 4.15, PRLR 6.46, all adj-p < 1e-218).
 
-### Problem 2 — cross-modal cluster agreement is implausibly low (medium confidence that it's a real defect)
-RNA–ATAC cluster ARI is **0.190**, yet each modality recovers the same 8-line ground truth well on its own (RNA ARI 0.767, ATAC ARI 0.906). Two clusterings that each track the same labeling at ~0.8–0.9 should agree with each other far better than 0.19. Part of this is benign over-clustering (14 RNA vs 10 ATAC clusters for 8 lines; ARI penalizes splitting), but splitting alone doesn't plausibly get you to 0.19. Combined with Problem 1, I read this as a partial cell-barcode/label alignment issue affecting a subset of cells rather than a global shuffle — the ESR1 and MDM2 cross-modal checks rule out wholesale scrambling.
+**The specific problem: the QC numbers are internally inconsistent about cross-modal agreement.**
+- RNA clustering recovers true cell-line identity at ARI 0.767; ATAC clustering recovers it at ARI 0.906.
+- Yet RNA-vs-ATAC cluster agreement is ARI 0.190.
 
-### Caveats (not defects)
-- **10.6% scrublet-called doublets appear to still be in the object.** In a pooled design these are inter-line hybrids and can generate spurious "intermediate" clusters — a plausible contributor to 14 RNA clusters and to the depressed cross-modal ARI. Filter before any clustering-dependent claim.
-- **A-673 has only 164 cells** and spans 3 batches (b1/b2/b3) across 26 sequencing samples — underpowered for per-line conclusions.
-- NKX2-1 and SOX2 were *not* significant markers of any cluster. That's not evidence of a problem: with two lung lines present, a shared lineage gene loses cluster specificity by construction.
+Two clusterings that each track the same 8-way ground truth that closely cannot disagree with *each other* that badly. The 14-vs-10 cluster granularity mismatch does cost some ARI — but the ground-truth ARIs already absorb that penalty (RNA's 14 clusters only cost it ~0.23 against truth), so granularity does not plausibly explain a drop to 0.19. This points at the per-cell RNA↔ATAC barcode correspondence / integration step, not at the cells.
+
+**Corroborating (weaker) signal:** TF expression vs. its own motif's chromVAR deviation is essentially null, and twice the wrong sign, for TFs that should be sharply lineage-restricted in this pool — GATA3 rho = −0.079, FLI1 rho = −0.051, FOXA1 rho = +0.108. With T-47D contributing ~12% of cells, a real per-cell pairing should give a clearly positive GATA3 correlation. I weight this only moderately: motif-based TF-activity inference is genuinely noisy and method-dependent (PMID 39441876 benchmarks exactly this and finds results vary substantially by method), and small |rho| between modalities is normal in general.
+
+**Counter-evidence I have to report honestly:** the pairing is *not* fully scrambled. `cross_modal_marker_check` matched partners by cell overlap and confirmed ESR1 and GATA3 (RNA cluster 4 ↔ ATAC cluster 4) and FLI1 (RNA 3 ↔ ATAC 8), 3/3 with independent gene-activity confirmation. A completely shuffled barcode mapping would have broken those. So this reads as *partially degraded or mis-computed* cross-modal correspondence, not total corruption.
+
+**Two smaller flags:**
+- Median 7.0% mitochondrial reads. For a nuclei-based multiome prep this is high (background knowledge: snRNA-seq is typically ≲5%, often ~1%) and suggests ambient/cytoplasmic carryover. Not disqualifying, but worth checking.
+- A-673 has only 164 cells (2.8%). Too few for confident line-specific claims; restrict detailed work to the well-powered lines (NCI-H838, HCC-44, SJSA1, T-47D).
+- The QC summary did not return a doublet rate despite offering one — I can't comment on doublets.
 
 ## Evidence
+
 | Claim | Source | Confidence |
 |---|---|---|
-| Depth/mito/ATAC QC numbers above | `get_qc_summary` | High |
-| 8 lines + names/counts; no condition axis | `check_for_identity_columns`, `check_for_condition_groups` | High |
-| ACH-000416 = NCI-H838 (lung adeno), ACH-000748 = SJSA-1 (osteosarcoma) | `resolve_depmap_id` (live Cellosaurus) | High |
-| `rna_label` inconsistent between modalities (77 vs 653; 33 vs 423) and has ~60 spurious IDs | `check_for_identity_columns` | High |
-| Mislabel-flag columns say "no" for all 5,814 cells despite the above | `check_for_identity_columns` | High |
-| Cross-modal ARI 0.190 vs RNA 0.767 / ATAC 0.906 vs truth = anomalous | `get_qc_summary` + reasoning | Medium |
-| Pairing not globally scrambled | `cross_modal_marker_check` ESR1 (cluster 4→4, confirmed), MDM2 (1→1, confirmed) | Medium-high |
-| MDM2 amplification is characteristic of SJSA-1 | Background knowledge, not a tool result | Medium |
+| 8 named cell lines, counts as listed; no condition axis; no mislabelled cells | `check_for_identity_columns`, `check_for_condition_groups` | **High** — read directly from real metadata fields |
+| Per-cell QC (fragments 8,484; FRiP 0.62; TSS 14.6; 4,258 genes; 9,296 UMIs) is acceptable | `get_qc_summary` | **High** |
+| Cross-modal ARI 0.190 is inconsistent with ground-truth ARIs 0.767 / 0.906 → integration/pairing defect | `get_qc_summary` (all three numbers) + reasoning about ARI behaviour (background knowledge) | **Medium** — the numbers are solid; the *inference* that pairing is at fault is the interpretive step |
+| Near-null / wrong-sign TF-motif correlations (GATA3 −0.079, FLI1 −0.051, FOXA1 +0.108) | `tf_motif_correlation` ×3 | **High** for the values; **Low–Medium** as evidence of a defect, since motif-activity inference is intrinsically noisy (PMID 39441876) |
+| Pairing is not *fully* broken | `cross_modal_marker_check` on ESR1, GATA3, FLI1 — 3/3 confirmed | **Medium-High** |
+| Cluster 4 = T-47D | `top_cluster_markers("4")` + metadata | **High** |
+| 7.0% mito is high for a nuclei prep | `get_qc_summary` value + background knowledge on snRNA-seq mito content | **Medium** |
 
----
+**Recommended next step:** re-derive the RNA and ATAC cell barcode index alignment before trusting any joint RNA–ATAC analysis (peak-gene links, motif-expression correlation, multi-omic embedding). Per-modality clustering and cell-line-level marker analysis can be used as-is.
 
 ## 5. Novel findings, adversarial judging, and limitations
 (Some findings omitted due to private dataset)
@@ -327,7 +282,7 @@ Things that do survive scrutiny and are NOT artifacts: cluster 4 really is T-47D
 - Known-biology checklist items are generated fresh each run via literature RAG, not scored against a fixed pre-written ground-truth file -- recall/precision against a fixed checklist is a different, complementary evaluation this report doesn't repeat.
 - Gene activity is a noisier, indirect accessibility proxy than direct RNA counts; cross-modal disagreement on a real marker is expected, not necessarily a data-quality issue.
 - This report reflects a single run on one model; consistency across repeated runs (or across models) is a separate axis this report doesn't cover.
-- ATAC downsampling and doublet injection (used for the public dataset) could not be reused as-is here: this dataset has no raw fragments file (downsampling needs one) and RNA `.X` has no raw counts layer (doublet injection needs one) -- a real format constraint, not a design choice. The fault-injection section uses cell-line-label-swap, mixed-samples, and shuffled-RNA-ATAC-pairing instead.
+- ATAC downsampling and doublet injection (used for the public dataset) could not be reused as-is here: this dataset has no raw fragments file (downsampling needs one) and RNA `.X` has no raw counts layer (doublet injection needs one) -- a real format constraint, not a design choice. The fault-injection section uses cell-line-label-swap and shuffled-RNA-ATAC-pairing instead.
 - This dataset has no drug/treatment condition axis (checked by column name via `check_for_condition_groups`, not assumed) -- every cell is a control. The pipeline supports condition-level analysis (per-arm QC via `condition_group_qc`, condition-specific literature RAG) for a future dataset that does have one; it's simply not exercised here.
 - The negative-control check was NOT run for this report. See the public report's own negative-control section for what this check looks like when it does run.
 

@@ -1,4 +1,4 @@
-"""Tests for the two shareseq-multi-cell-lines-only fault types. Skips gracefully if the
+"""Tests for the shareseq-multi-cell-lines-only fault types. Skips gracefully if the
 shareseq-multi-cell-lines data isn't configured locally. Asserts only on numeric outcomes and
 anonymized letters -- never a literal cell-line/library identity string.
 """
@@ -10,8 +10,8 @@ import pytest
 from multiome_agent.agent.shareseq_fixed_core_cache import get_shareseq_fixed_core
 from multiome_agent.config import SHARESEQ_ATAC_H5AD, SHARESEQ_RNA_H5AD, SHARESEQ_RNA_HVG_H5AD
 from multiome_agent.data.shareseq_loader import load_shareseq_multiome
-from multiome_agent.eval.shareseq_fault_injection import mix_samples, shuffle_rna_atac_pairing, swap_cell_line_labels
-from multiome_agent.eval.shareseq_scoring import score_cell_line_swap, score_mixed_samples, score_shuffled_pairing
+from multiome_agent.eval.shareseq_fault_injection import shuffle_rna_atac_pairing, swap_cell_line_labels
+from multiome_agent.eval.shareseq_scoring import score_cell_line_swap, score_shuffled_pairing
 
 SHARESEQ_DATA_CONFIGURED = bool(SHARESEQ_RNA_H5AD and SHARESEQ_ATAC_H5AD and SHARESEQ_RNA_HVG_H5AD)
 
@@ -59,34 +59,10 @@ def test_swap_ground_truth_matches_actual_relabeling(clean_mdata):
         assert len(change["fake"]) == 1 and change["fake"].isalpha()
 
 
-def test_mix_samples_ground_truth_matches_actual_relabeling(clean_mdata):
-    faulted, meta = mix_samples(clean_mdata, seed=1)
-    assert meta.fault_type == "mixed_samples"
-    n_mixed = len(meta.ground_truth["mixed_cell_positions"])
-    assert n_mixed > 0
-
-    true_library = clean_mdata.mod["rna"].obs["library"]
-    new_library = faulted.mod["rna"].obs["library"]
-    for pos in meta.ground_truth["mixed_cell_positions"]:
-        assert new_library.iloc[pos] != true_library.iloc[pos]
-    # atac/rna_hvg modalities were relabeled consistently with rna
-    for mod in ["rna_hvg", "atac"]:
-        assert list(faulted.mod[mod].obs["library"]) == list(new_library)
-    # cell-line identity untouched by this fault
-    assert list(faulted.mod["rna"].obs["cell_line_name"]) == list(clean_mdata.mod["rna"].obs["cell_line_name"])
-
-
 def test_cell_line_swap_degrades_recovery_signal(clean_fixed_core, clean_mdata):
     faulted, _ = swap_cell_line_labels(clean_mdata, fraction=0.3, seed=2)
     result = score_cell_line_swap(clean_fixed_core, faulted)
     assert result["cell_line_recovery_ari_faulted"] < result["cell_line_recovery_ari_clean"]
-
-
-def test_mixed_samples_scoring_runs_and_returns_real_numbers(clean_fixed_core, clean_mdata):
-    faulted, meta = mix_samples(clean_mdata, seed=3)
-    result = score_mixed_samples(clean_fixed_core, faulted, meta.ground_truth["mixed_cell_positions"])
-    assert result["merged_sample_size"] > 0
-    assert result["merged_sample_mito_iqr"] >= 0
 
 
 def test_shuffle_rna_atac_pairing_moves_full_rows_not_just_names(clean_fixed_core):

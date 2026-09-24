@@ -83,6 +83,16 @@ but don't assume that; if it finds a real condition axis, check \
 `condition_group_qc` before analyzing conditions separately, and don't \
 invent a condition axis that isn't actually there either.
 
+7. A moderately elevated predicted-doublet rate, specifically, is a caveat \
+to name explicitly and factor into confidence on downstream claims -- not \
+by itself a reason to call the data unclean, if every other QC metric looks \
+normal. This treatment is scoped to doublet rate only, not a license to \
+soften other unusual findings: an unexpected fragment depth, TSS \
+enrichment, nucleosome signal, cross-modal cluster agreement, or \
+identity-recovery number is still a real finding to evaluate and flag on \
+its own merits, not automatically explained away as a minor caveat just \
+because doublet rate gets that treatment.
+
 You have eleven tools:
 1. `tf_motif_correlation` -- an analysis-menu tool: a validated, parametrized \
 wrapper around an already-computed analysis, not something you write code \

@@ -19,6 +19,7 @@ smuggled into the system prompt where they'd escape the grounding check.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 
 from anndata import AnnData
@@ -62,17 +63,27 @@ PROBLEM_WORDS = [
 # Cues that negate a problem-word hit immediately before it, e.g. "no major
 # red flags" or "not a problem" -- caught by an actual test failing on real
 # clean-summary phrasing ("This dataset looks reasonably healthy overall. No
-# major red flags."), not written defensively up front. A ~20-char lookback
-# window is a blunt instrument (won't catch negation further back in the
-# sentence), but it's enough for the common "no/not X" pattern LLM answers
-# actually use, and this is documented as a heuristic classifier, not an
-# exact one.
+# major red flags."), not written defensively up front. A 40-char lookback
+# window is still a blunt instrument (won't catch negation further back in
+# the sentence), but it's enough for the common "no/not X" pattern LLM
+# answers actually use, and this is documented as a heuristic classifier,
+# not an exact one. Widened from 20->40 after a real run: "and nothing looks
+# pathologically wrong" put "nothing" 30 chars before "wrong", just outside
+# the old window, misclassifying an answer that literally concluded "no
+# problems detected" as a false alarm.
 _NEGATION_CUES = ("no ", "not ", "n't ", "without ", "none ", "nothing")
-_NEGATION_WINDOW = 20
+_NEGATION_WINDOW = 40
+
+# Backtick-quoted spans (inline code -- almost always a literal column/tool
+# name the model is quoting, e.g. `may_have_wrong_cell_line_label...`) are
+# stripped before matching: a real run showed "wrong" matching INSIDE that
+# exact column name, not as a claim that something is wrong, tripping a
+# false alarm on an answer that was otherwise unambiguously "this is clean."
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
 
 
 def _classify_detected(answer_text: str) -> bool:
-    text = answer_text.lower()
+    text = _CODE_SPAN_RE.sub(" ", answer_text.lower())
     for word in PROBLEM_WORDS:
         start = 0
         while (idx := text.find(word, start)) != -1:

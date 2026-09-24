@@ -34,6 +34,20 @@ def test_classify_diagnosis_matches_clean_control_is_none():
     assert _classify_diagnosis_matches("anything", "clean_control") is None
 
 
+def test_classify_detected_ignores_problem_word_inside_backtick_quoted_column_name():
+    # Real false alarm: "wrong" matching inside a literally-quoted column
+    # name (`may_have_wrong_cell_line_label...`), not a claim of a problem.
+    text = "The `may_have_wrong_cell_line_label_based_on_rna_cluster` flag reads \"no\" for every cell."
+    assert not _classify_detected(text)
+
+
+def test_classify_detected_false_on_negation_further_back_than_old_20char_window():
+    # Real false alarm: "nothing" sits ~30 chars before "wrong", just past
+    # the old 20-char lookback window.
+    text = "I checked the summary and the metadata, and nothing looks pathologically wrong here."
+    assert not _classify_detected(text)
+
+
 def test_classify_diagnosis_matches_doublets_keyword():
     assert _classify_diagnosis_matches("The elevated doublet score suggests multiplets.", "injected_doublets")
 
