@@ -83,8 +83,33 @@ not mockups.
 ```bash
 conda env create -f environment.yml       # or: pip install -e .[dev]
 cp .env.example .env                      # add your ANTHROPIC_API_KEY (never committed)
+make demo                                 # one real agent investigation, ~10-25s, ~$0.02
+```
+
+`make demo` runs against a small, already-committed cache (`demo_cache/agent_demo_core.h5mu`,
+150 cells, ~46MB — see `agent/demo_fixed_core_cache.py`), so it's genuinely fast on a fresh
+clone with no data download needed (a real run: 24s, $0.022). It's illustrative only, at a small
+subsample — see `reports/examples/` for the real, full-scale analyses this project's flagship
+reports are built from. It asks one fixed default question unless you give it your own:
+
+```bash
+make demo QUESTION="does CD3E mark T cells in this dataset?"
+```
+
+Want the raw data and the full-scale pipeline (needed for the fresh-report-generation command
+below)? That's a separate, larger download, not needed for `make demo` itself:
+
+```bash
 bash scripts/download_pbmc_data.sh        # ~3.3GB: PBMC 10k Multiome + hg38 2bit genome
-make demo QUESTION="does CD3E mark T cells in this dataset?"  # one real agent investigation for your question on dataset, ~10s, ~$0.01
+```
+
+The *first* real run of the full fixed-core pipeline on that raw data (QC, clustering, gene
+activity, motif deviations, at the real 11,909-cell scale) takes on the order of an hour —
+dominated by chromVAR's motif-deviation permutation step at full scale, not the ATAC fragments
+sort — a one-time, disclosed cost, never triggered by `make demo` itself.
+
+```bash
+make test    # full test suite
 ```
 
 Don't want to run anything yourself? The two committed reports in `reports/examples/` are the
