@@ -180,13 +180,14 @@ def _render_section3(items: list[ChecklistItem], identity_answer: str) -> str:
         "usable in this dataset before recording it.\n\n",
     ]
     labels = {
-        "rna_marker": "RNA markers", "motif": "Motifs", "tf_motif_tracking": "TF-expression-tracks-motif-accessibility",
+        "rna_marker": "RNA markers", "motif": "Motifs",
+        "peak_to_gene": "Distal peak-to-gene links", "regulon_target": "TF-target-gene regulon links",
     }
     confirmed = [it for it in items if it.confirmed_present_in_data]
     rejected = [it for it in items if not it.confirmed_present_in_data]
 
     lines.append("## Confirmed by data\n\n")
-    by_category = {"rna_marker": [], "motif": [], "tf_motif_tracking": []}
+    by_category = {"rna_marker": [], "motif": [], "peak_to_gene": [], "regulon_target": []}
     for item in confirmed:
         by_category.setdefault(item.category, []).append(item)
     for cat, cat_items in by_category.items():

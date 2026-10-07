@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import py2bit
 import pychromvar as pc
+import scipy.sparse as sp
 import urllib.request
 from anndata import AnnData
 from Bio import motifs as biomotifs
@@ -77,13 +78,45 @@ def _add_peak_seq_from_2bit(atac: AnnData) -> AnnData:
     return atac
 
 
+def _persist_motif_match(mdata: MuData, filtered_atac: AnnData) -> None:
+    """Persist pychromvar's peak x motif binary match matrix -- computed as a
+    side effect of `pc.match_motif` on `filtered_atac` (a COPY with possibly
+    FEWER peaks than the real dataset, since `_add_peak_seq_from_2bit` drops
+    peaks whose chrom isn't in the 2bit file) -- onto the FULL, unfiltered
+    peak set in `mdata.mod["atac"]`. `compute_motif_deviations` already pays
+    for this computation and previously discarded it entirely; persisting it
+    lets `core.regulon_inference` ask "which peaks carry motif X" without
+    re-running motif scanning (JASPAR + MOODS) a second time.
+
+    Peaks dropped by the 2bit filter get an all-zero row (no evidence, not
+    "excluded") -- a tiny, already-documented minority (see
+    `_add_peak_seq_from_2bit`'s docstring), and a regulon search over the
+    rest of the genome shouldn't be blocked by it.
+
+    Stored as `mdata.mod["atac"].varm["motif_match"]` (scipy sparse, shape
+    full_n_peaks x n_motifs -- a plain scipy sparse matrix, same
+    natively-h5-writable convention `core.gene_activity.compute_gene_activity`
+    already relies on for `obsm`) plus `mdata.mod["atac"].uns["motif_match_names"]`
+    (the motif name list, SAME indexing as the matrix's columns).
+    """
+    full_atac = mdata.mod["atac"]
+    full_idx = full_atac.var_names.get_indexer(filtered_atac.var_names)
+    match = filtered_atac.varm["motif_match"]  # dense (n_filtered_peaks, n_motifs) uint8, per pychromvar
+    full_match = sp.lil_matrix((full_atac.n_vars, match.shape[1]), dtype=np.uint8)
+    full_match[full_idx, :] = match
+    full_atac.varm["motif_match"] = full_match.tocsr()
+    full_atac.uns["motif_match_names"] = list(filtered_atac.uns["motif_name"])
+
+
 def compute_motif_deviations(mdata: MuData) -> AnnData:
     """Compute per-cell chromVAR-style motif deviation z-scores.
 
     Returns an AnnData (cells x motifs) of deviation scores, also stashed at
     `mdata.mod["atac"].uns["chromvar_motif_names"]` (motif name list) and
     `mdata.mod["atac"].obsm["chromvar_deviations"]` (same values as a
-    DataFrame, motif names as columns, for easy citation by name).
+    DataFrame, motif names as columns, for easy citation by name). Also
+    persists the peak x motif match matrix (see `_persist_motif_match`) for
+    `core.regulon_inference` to reuse.
     """
     atac = mdata.mod["atac"].copy()
     atac.X = atac.layers["counts"] if "counts" in atac.layers else atac.X
@@ -101,6 +134,7 @@ def compute_motif_deviations(mdata: MuData) -> AnnData:
 
     motif_list = _fetch_jaspar_motifs()
     pc.match_motif(atac, motif_list, background="even")
+    _persist_motif_match(mdata, atac)
 
     logger.info("Sampling GC/accessibility-matched background peaks...")
     pc.get_bg_peaks(atac)
@@ -116,6 +150,20 @@ def compute_motif_deviations(mdata: MuData) -> AnnData:
 
     logger.info("Motif deviations complete: %d motifs retained", dev.n_vars)
     return dev
+
+
+def motif_name_tokens(column: str) -> list[str]:
+    """The real TF-name token(s) a JASPAR chromvar_deviations/motif_match_names
+    column encodes. Columns look like "MA0080.7.Spi1" or, for heterodimers,
+    "MA0019.2.Ddit3::Cebpa" -- the real TF-name segment is everything after
+    the matrix ID, further split on "::"/"_" for composites, lowercased.
+    Factored out of `_motif_match_rank` so other code (e.g.
+    `agent.demo_fixed_core_cache`'s decision about which motif columns are
+    even reachable for a given RNA gene panel) can tokenize a motif name
+    the exact same way without duplicating this regex.
+    """
+    name_part = column.split(".", 2)[-1] if column.count(".") >= 2 else column
+    return [t.lower() for t in re.split(r"::|_", name_part)]
 
 
 def _motif_match_rank(query: str, column: str) -> int:
@@ -134,14 +182,29 @@ def _motif_match_rank(query: str, column: str) -> int:
     happened to sort first. Verified against real chromvar_deviations
     columns, not assumed: this dataset has both.
     """
-    name_part = column.split(".", 2)[-1] if column.count(".") >= 2 else column
-    tokens = [t.lower() for t in re.split(r"::|_", name_part)]
+    tokens = motif_name_tokens(column)
     query_l = query.lower()
     if tokens == [query_l]:
         return 0
     if query_l in tokens:
         return 1
     return 2
+
+
+def best_motif_match(columns, query: str) -> str | None:
+    """Pick the best-matching name among `columns` (e.g. `chromvar_deviations`
+    columns, or `motif_match_names`) for `query`, by `_motif_match_rank` --
+    exact token match preferred over one factor of a composite preferred
+    over a raw substring match. Returns None if nothing contains `query` at
+    all. Factored out of `tf_expression_motif_correlation` so
+    `core.regulon_inference` can resolve a TF's motif the exact same way
+    against a DIFFERENT name list (`motif_match_names`, not
+    `chromvar_deviations`'s columns) without duplicating the ranking logic.
+    """
+    matches = [c for c in columns if query.lower() in c.lower()]
+    if not matches:
+        return None
+    return min(matches, key=lambda c: _motif_match_rank(query, c))
 
 
 def tf_expression_motif_correlation(mdata: MuData, gene: str, motif_name_contains: str) -> dict:
@@ -167,10 +230,9 @@ def tf_expression_motif_correlation(mdata: MuData, gene: str, motif_name_contain
     expr = np.asarray(rna[:, gene].X.todense()).ravel() if hasattr(rna[:, gene].X, "todense") else np.asarray(rna[:, gene].X).ravel()
 
     dev_df = mdata.mod["atac"].obsm["chromvar_deviations"]
-    matches = [c for c in dev_df.columns if motif_name_contains.lower() in c.lower()]
-    if not matches:
+    motif_name = best_motif_match(dev_df.columns, motif_name_contains)
+    if motif_name is None:
         raise ValueError(f"No motif matching {motif_name_contains!r} among chromvar_deviations columns")
-    motif_name = min(matches, key=lambda c: _motif_match_rank(motif_name_contains, c))
     deviation = dev_df[motif_name].reindex(rna.obs_names).to_numpy()
 
     rho, pval = spearmanr(expr, deviation)

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from multiome_agent.agent.loop import TOOLS, AgentRunResult, run_agent
 from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
+from multiome_agent.agent.shortlist import SHORTLIST_MODEL, cheap_already_known_check
 from multiome_agent.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -108,7 +109,18 @@ already-established literature findings you (or a prior step) confirmed:
 {covered}
 
 Try up to 6 candidate NOVEL findings: specific, checkable patterns in THIS data that go beyond \
-what's already covered above -- not a restatement of a known-biology checklist item. For EACH \
+what's already covered above -- not a restatement of a known-biology checklist item. PRIORITIZE \
+order matters here: your FIRST 3 attempts must be `regulon_inference`-based (a TF's RNA tracking \
+a SPECIFIC OTHER gene it's predicted to regulate -- real motif + chromatin evidence, per-target-gene \
+correlation, never an aggregate score) or `peak_to_gene_links`-based (a specific DISTAL peak's \
+accessibility tracking a target gene's own expression) candidates -- never "TF X's own RNA tracks \
+its own motif" (`tf_motif_correlation`) for these first 3, even though that's the easiest signal to \
+find. A TF-target-gene or peak-to-gene claim is structurally different and harder-to-already-know \
+than TF-vs-own-motif, and is one a literature search can actually confirm or refute by name (e.g. \
+"does SPI1 regulate CD14?" rather than "does SPI1 track its own motif?"). Only if those first 3 \
+attempts (across regulon_inference/peak_to_gene_links) all fail to survive their own literature \
+self-check may you fall back to a `tf_motif_correlation`-based (TF-vs-own-motif) candidate for your \
+remaining attempts. For EACH \
 candidate, before deciding whether to record it: (1) gather the real tool evidence for it (actual \
 numbers, not guessed), then (2) run at least one `search_pubmed` call -- and `fetch_pubmed_abstracts` \
 on any promising hit -- to check whether this SAME specific pattern is already reported. If your \
@@ -204,12 +216,36 @@ def propose_novel_findings(
 def judge_novel_findings(
     findings: list[dict], mdata, qc_summary: str, dataset_context: str | None = None,
     model: str | None = None, max_turns: int = 20,
+    use_cheap_prefilter: bool = True, shortlist_model: str = SHORTLIST_MODEL,
 ) -> list[JudgedFinding]:
     """`dataset_context` defaults to `OWN_DATA_CONTEXT` (see
-    `checklist_generator.generate_checklist`'s docstring for why)."""
+    `checklist_generator.generate_checklist`'s docstring for why).
+
+    `use_cheap_prefilter` -- if True (default), tries ONE free `search_pubmed`
+    call + one cheap single-abstract judgment (`shortlist_model`, Haiku) per
+    finding BEFORE spending the full adversarial Judger agent call on it. If
+    that cheap check already finds the claim is trivially well-established,
+    the finding is struck down right there -- the expensive Judger (artifact-
+    checking plus its own open-ended literature search) is skipped entirely
+    for that finding, since there's nothing left for it to usefully add once
+    "already known" is already settled. A finding the cheap check doesn't
+    resolve still gets the full Judger exactly as before -- this never makes
+    a finding look MORE novel than the expensive path alone would have, it
+    only ever short-circuits the "actually just already known" outcome
+    cheaply.
+    """
     dataset_context = dataset_context if dataset_context is not None else OWN_DATA_CONTEXT
     judged = []
     for f in findings:
+        verdict = cheap_already_known_check(f["finding"], model=shortlist_model) if use_cheap_prefilter else None
+        if verdict is not None:
+            logger.info("Judged finding %r -> struck_down (cheap already-known prefilter, no Judger call spent)", f["finding"][:60])
+            judged.append(JudgedFinding(
+                finding=f["finding"], evidence=f["evidence"], confidence=f["confidence"],
+                verdict=verdict, judge_cost_usd=0.0, finding_type=f.get("finding_type", "positive_relationship"),
+            ))
+            continue
+
         result = run_agent(
             _judger_question(f["finding"], f["evidence"]), model=model, max_turns=max_turns, mdata=mdata,
             qc_summary=qc_summary, tools=JUDGER_TOOLS, dataset_context=dataset_context,
@@ -237,7 +273,8 @@ def judge_novel_findings(
 
 
 def check_novelty_negative_control(
-    shuffled_mdata, shuffled_qc_summary: str, dataset_context: str | None = None, model: str | None = None
+    shuffled_mdata, shuffled_qc_summary: str, dataset_context: str | None = None, model: str | None = None,
+    use_cheap_prefilter: bool = True, shortlist_model: str = SHORTLIST_MODEL,
 ) -> dict:
     """Runs `propose_novel_findings` against a shuffled-RNA-ATAC-pairing
     state (no real cross-modal relationship left) -- a well-behaved
@@ -261,7 +298,10 @@ def check_novelty_negative_control(
     )
     positive = [f for f in findings if f.get("finding_type") == "positive_relationship"]
     concerns = [f for f in findings if f.get("finding_type") != "positive_relationship"]
-    judged = judge_novel_findings(positive, shuffled_mdata, shuffled_qc_summary, dataset_context, model=model) if positive else []
+    judged = judge_novel_findings(
+        positive, shuffled_mdata, shuffled_qc_summary, dataset_context, model=model,
+        use_cheap_prefilter=use_cheap_prefilter, shortlist_model=shortlist_model,
+    ) if positive else []
     judge_cost = sum(j.judge_cost_usd for j in judged)
     logger.info(
         "Negative control: %d finding(s) (%d positive_relationship -> judged, %d no_signal_or_concern -> not judged)",

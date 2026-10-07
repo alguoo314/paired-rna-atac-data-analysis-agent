@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
-from multiome_agent.agent.checklist_generator import ChecklistItem, generate_checklist
+from multiome_agent.agent.checklist_generator import CHECKLIST_CATEGORIES, ChecklistItem, generate_checklist
 
 
 @dataclass
@@ -74,15 +74,15 @@ def test_generate_checklist_handles_zero_items_gracefully():
 
 
 def test_generate_checklist_dedups_same_gene_within_category():
-    # Real bug from an actual run: recorded two "tf_motif_tracking" items
-    # both about FOXA1 (two different literature framings of the same
-    # gene) while burning $6/60 turns searching for a genuinely different
-    # 3rd candidate. Dedup is deterministic, not relied on the model's own
+    # Real bug from an actual run: recorded two "peak_to_gene" items both
+    # about FOXA1 (two different literature framings of the same gene)
+    # while burning $6/60 turns searching for a genuinely different 3rd
+    # candidate. Dedup is deterministic, not relied on the model's own
     # discipline -- keep only the first occurrence per (category, gene).
     fake_result = _FakeResult(tool_calls=[
-        _fake_call("tf_motif_tracking", "FOXA1", "claim A", "1", "J1", "2020", True),
-        _fake_call("tf_motif_tracking", "FOXA1", "claim B (different framing)", "2", "J2", "2023", True),
-        _fake_call("tf_motif_tracking", "GATA3", "claim C", "3", "J3", "2021", True),
+        _fake_call("peak_to_gene", "FOXA1", "claim A", "1", "J1", "2020", True),
+        _fake_call("peak_to_gene", "FOXA1", "claim B (different framing)", "2", "J2", "2023", True),
+        _fake_call("peak_to_gene", "GATA3", "claim C", "3", "J3", "2021", True),
     ])
     with patch("multiome_agent.agent.checklist_generator.run_agent", return_value=fake_result):
         items, _ = generate_checklist(mdata=object(), qc_summary="qc", dataset_context="ctx")
@@ -94,17 +94,17 @@ def test_generate_checklist_dedups_same_gene_within_category():
 
 def test_generate_checklist_allows_same_gene_across_different_categories():
     # Cross-category reuse is legitimate: "FOXA1 motif is elevated" (motif
-    # category) and "FOXA1 expression tracks its own motif" (tf_motif_tracking
+    # category) and "FOXA1 regulates a distal target" (peak_to_gene
     # category) are two distinct, non-redundant claims about the same gene.
     fake_result = _FakeResult(tool_calls=[
         _fake_call("motif", "FOXA1", "motif claim", "1", "J1", "2020", True),
-        _fake_call("tf_motif_tracking", "FOXA1", "tracking claim", "2", "J2", "2023", True),
+        _fake_call("peak_to_gene", "FOXA1", "distal-link claim", "2", "J2", "2023", True),
     ])
     with patch("multiome_agent.agent.checklist_generator.run_agent", return_value=fake_result):
         items, _ = generate_checklist(mdata=object(), qc_summary="qc", dataset_context="ctx")
 
     assert len(items) == 2
-    assert {i.category for i in items} == {"motif", "tf_motif_tracking"}
+    assert {i.category for i in items} == {"motif", "peak_to_gene"}
 
 
 def test_generate_checklist_dedup_is_case_insensitive():
@@ -116,3 +116,94 @@ def test_generate_checklist_dedup_is_case_insensitive():
         items, _ = generate_checklist(mdata=object(), qc_summary="qc", dataset_context="ctx")
 
     assert len(items) == 1
+
+
+def test_generate_checklist_shortlist_fully_covers_category_skips_agent_entirely():
+    # When the cheap shortlist path reaches 3 confirmed items in a category,
+    # the expensive run_agent must not be called for it at all.
+    shortlist_item = ChecklistItem("rna_marker", "CD14", "claim", "1", "J", "2020", True)
+    with patch("multiome_agent.agent.checklist_generator.resolve_cheap_identity", return_value=["T-47D"]), \
+         patch("multiome_agent.agent.checklist_generator.shortlist_checklist_items_for_category",
+               return_value=[shortlist_item, shortlist_item, shortlist_item]) as mock_shortlist, \
+         patch("multiome_agent.agent.checklist_generator.run_agent") as mock_run_agent:
+        items, result = generate_checklist(
+            mdata=object(), qc_summary="qc", dataset_context="ctx", categories=("rna_marker",),
+        )
+
+    mock_run_agent.assert_not_called()
+    assert mock_shortlist.call_count == 1
+    assert len(items) == 1  # 3 identical items dedup to 1 (same category, same gene)
+    assert result.estimated_cost_usd == 0.0
+
+
+def test_generate_checklist_shortlist_shortfall_triggers_scoped_fallback():
+    # Shortlist finds only 1/3 for "motif" -- run_agent must be called, and
+    # ONLY for the category that still needs filling.
+    with patch("multiome_agent.agent.checklist_generator.resolve_cheap_identity", return_value=["T-47D"]), \
+         patch("multiome_agent.agent.checklist_generator.shortlist_checklist_items_for_category",
+               return_value=[ChecklistItem("motif", "FOXA1", "claim", "1", "J", "2020", True)]), \
+         patch("multiome_agent.agent.checklist_generator.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = _FakeResult(tool_calls=[
+            _fake_call("motif", "GATA3", "claim B", "2", "J2", "2021", True),
+        ])
+        items, result = generate_checklist(
+            mdata=object(), qc_summary="qc", dataset_context="ctx", categories=("motif",),
+        )
+
+    mock_run_agent.assert_called_once()
+    fallback_question = mock_run_agent.call_args[0][0]
+    assert "motif" in fallback_question
+    assert "rna_marker" not in fallback_question  # only the categories still needing work are asked about
+    assert "T-47D" in fallback_question  # resolved identity passed through, not re-derived
+    assert {i.gene_or_motif for i in items} == {"FOXA1", "GATA3"}
+
+
+def test_generate_checklist_no_identity_available_falls_back_to_full_agent_unconditionally():
+    with patch("multiome_agent.agent.checklist_generator.resolve_cheap_identity", return_value=None), \
+         patch("multiome_agent.agent.checklist_generator.shortlist_checklist_items_for_category") as mock_shortlist, \
+         patch("multiome_agent.agent.checklist_generator.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = _FakeResult(tool_calls=[])
+        generate_checklist(mdata=object(), qc_summary="qc", dataset_context="ctx")
+
+    mock_shortlist.assert_not_called()
+    mock_run_agent.assert_called_once()
+
+
+def test_generate_checklist_use_shortlist_false_skips_shortlist_even_with_identity():
+    with patch("multiome_agent.agent.checklist_generator.resolve_cheap_identity") as mock_resolve, \
+         patch("multiome_agent.agent.checklist_generator.run_agent") as mock_run_agent:
+        mock_run_agent.return_value = _FakeResult(tool_calls=[])
+        generate_checklist(mdata=object(), qc_summary="qc", dataset_context="ctx", use_shortlist=False)
+
+    mock_resolve.assert_not_called()
+    mock_run_agent.assert_called_once()
+
+
+def test_generate_checklist_existing_items_preserved_for_untouched_categories():
+    # Categories outside `categories` must pass through completely untouched
+    # -- no shortlist call, no agent call, same objects back out.
+    old_marker_item = ChecklistItem("rna_marker", "CD14", "old claim", "1", "J", "2020", True)
+    old_motif_item = ChecklistItem("motif", "SPI1", "old claim", "2", "J", "2020", True)
+    with patch("multiome_agent.agent.checklist_generator.resolve_cheap_identity", return_value=["T-47D"]), \
+         patch("multiome_agent.agent.checklist_generator.shortlist_checklist_items_for_category",
+               return_value=[ChecklistItem("regulon_target", "SPI1->CD14", "new claim", "3", "J", "2021", True)] * 3), \
+         patch("multiome_agent.agent.checklist_generator.run_agent") as mock_run_agent:
+        items, _ = generate_checklist(
+            mdata=object(), qc_summary="qc", dataset_context="ctx",
+            categories=("regulon_target",), existing_items=[old_marker_item, old_motif_item],
+        )
+
+    mock_run_agent.assert_not_called()
+    assert old_marker_item in items
+    assert old_motif_item in items
+    assert any(i.category == "regulon_target" for i in items)
+    assert len(items) == 3  # 2 preserved + 1 deduped-from-3 new
+
+
+def test_generate_checklist_default_categories_cover_all_four():
+    # "tf_motif_tracking" (TF-vs-own-motif) was deliberately removed from the
+    # checklist in favor of "regulon_target" (TF-vs-specific-other-gene) --
+    # a structurally different, harder-to-already-know claim. The tool
+    # (tf_motif_correlation) remains real and usable elsewhere; it's just
+    # no longer a checklist category.
+    assert CHECKLIST_CATEGORIES == ("rna_marker", "motif", "peak_to_gene", "regulon_target")

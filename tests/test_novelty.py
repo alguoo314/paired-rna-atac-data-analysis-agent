@@ -83,7 +83,7 @@ def test_judge_novel_findings_pairs_verdict_with_original_finding():
     findings = [{"finding": "A", "evidence": "ev-A", "confidence": "high"}]
     fake = _FakeResult(tool_calls=[_verdict_call("struck_down", already_known=True)])
     with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
-        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx")
+        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
     assert len(judged) == 1
     assert judged[0].finding == "A"
     assert judged[0].verdict["verdict"] == "struck_down"
@@ -94,7 +94,7 @@ def test_judge_novel_findings_handles_missing_verdict():
     findings = [{"finding": "A", "evidence": "ev-A", "confidence": "low"}]
     fake = _FakeResult(tool_calls=[])  # judger never called record_judger_verdict
     with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
-        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx")
+        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
     assert judged[0].verdict is None
 
 
@@ -111,7 +111,7 @@ def test_judge_novel_findings_backfills_missing_verdict_field_survives():
         "is_error": False,
     }])
     with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
-        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx")
+        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
     assert judged[0].verdict["verdict"] == "survives"
 
 
@@ -123,7 +123,7 @@ def test_judge_novel_findings_backfills_missing_verdict_field_struck_down():
         "is_error": False,
     }])
     with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
-        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx")
+        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
     assert judged[0].verdict["verdict"] == "struck_down"
 
 
@@ -135,7 +135,7 @@ def test_negative_control_reports_hallucination_when_findings_proposed():
     # checks the proposed count, not the judged verdict.
     fake = _FakeResult(tool_calls=[_finding_call("spurious link", "weak rho", "low")])
     with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
-        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx")
+        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
     assert result["n_findings_proposed"] == 1
 
 
@@ -158,7 +158,7 @@ def test_negative_control_only_judges_positive_relationship_findings():
         return judge_fake if "record_judger_verdict` exactly once" in question else propose_fake
 
     with patch("multiome_agent.agent.novelty.run_agent", side_effect=fake_run_agent):
-        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx")
+        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
 
     assert result["n_findings_proposed"] == 2
     assert len(result["judged_positive_findings"]) == 1
@@ -178,7 +178,7 @@ def test_negative_control_skips_judging_entirely_when_all_concerns():
         return propose_fake
 
     with patch("multiome_agent.agent.novelty.run_agent", side_effect=fake_run_agent):
-        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx")
+        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
 
     assert len(calls) == 1  # only the propose call -- no Judger call spent on a non-positive finding
     assert result["judged_positive_findings"] == []
@@ -198,5 +198,41 @@ def test_propose_novel_findings_defaults_missing_finding_type_to_positive_relati
 def test_negative_control_clean_when_no_findings_proposed():
     fake = _FakeResult(tool_calls=[])
     with patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
-        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx")
+        result = check_novelty_negative_control(shuffled_mdata=object(), shuffled_qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
     assert result["n_findings_proposed"] == 0
+
+
+def test_judge_novel_findings_cheap_prefilter_strikes_down_without_calling_run_agent():
+    findings = [{"finding": "X regulates Y", "evidence": "ev", "confidence": "medium"}]
+    with patch("multiome_agent.agent.novelty.cheap_already_known_check") as mock_prefilter, \
+         patch("multiome_agent.agent.novelty.run_agent") as mock_run_agent:
+        mock_prefilter.return_value = {
+            "likely_artifact": False, "artifact_reasoning": "(skipped)", "already_known": True,
+            "novelty_reasoning": "found in PMID 1", "verdict": "struck_down",
+        }
+        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx")
+
+    mock_run_agent.assert_not_called()
+    assert judged[0].verdict["verdict"] == "struck_down"
+    assert judged[0].judge_cost_usd == 0.0
+
+
+def test_judge_novel_findings_cheap_prefilter_unresolved_escalates_to_full_judger():
+    findings = [{"finding": "X regulates Y", "evidence": "ev", "confidence": "medium"}]
+    fake = _FakeResult(tool_calls=[_verdict_call("survives")])
+    with patch("multiome_agent.agent.novelty.cheap_already_known_check", return_value=None), \
+         patch("multiome_agent.agent.novelty.run_agent", return_value=fake) as mock_run_agent:
+        judged = judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx")
+
+    mock_run_agent.assert_called_once()
+    assert judged[0].verdict["verdict"] == "survives"
+
+
+def test_judge_novel_findings_use_cheap_prefilter_false_skips_prefilter_entirely():
+    findings = [{"finding": "X regulates Y", "evidence": "ev", "confidence": "medium"}]
+    fake = _FakeResult(tool_calls=[_verdict_call("survives")])
+    with patch("multiome_agent.agent.novelty.cheap_already_known_check") as mock_prefilter, \
+         patch("multiome_agent.agent.novelty.run_agent", return_value=fake):
+        judge_novel_findings(findings, mdata=object(), qc_summary="qc", dataset_context="ctx", use_cheap_prefilter=False)
+
+    mock_prefilter.assert_not_called()

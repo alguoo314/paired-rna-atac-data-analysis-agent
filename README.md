@@ -1,201 +1,205 @@
 # Multiome QC & Hypothesis Agent
 
-An LLM agent that acts like a computational biologist reviewing a new single-cell RNA + ATAC
-dataset: it judges whether the data is good enough to trust, checks whether expected
-biology actually shows up in it, and proposes new candidate findings for a human to review — then
-writes all of that up as one complete report per dataset, end to end, with no human running
-analysis steps in between.
+An LLM agent that reviews a new single-cell **RNA + ATAC (multiome)** dataset the way a computational biologist would. It:
 
-Every number in that report — QC metrics, cluster assignments, motif scores, correlations — comes
-from validated Python code; the LLM only plans which analyses to run and interprets what comes
-back, it never invents a number. It's also never told in advance what cell type, cell line, or
-condition the data contains — it has to work that out from evidence, the way a scientist reading
-an unlabeled dataset would. A fault-injection benchmark and a negative control check that it
-actually notices planted data problems and doesn't hallucinate a relationship out of thin air.
+1. **judges whether the data can be trusted** (QC and cross-modal consistency),
+2. **checks whether known biology actually shows up** (literature-grounded checklist), and
+3. **proposes new candidate findings** for a human to review.
 
-[`PROGRESS.md`](PROGRESS.md) is the full build log, written as the work happened — every bug
-found, every wrong turn, every fix, with receipts. Worth a read if you like seeing how the sausage
-actually gets made.
+It then writes everything up as one complete report per dataset, end to end, with no human running analysis steps in between.
+
+## Design principles
+
+- **The LLM never produces a number.** Every QC metric, cluster assignment, motif score and correlation comes from validated Python tools. The LLM only decides which analyses to run and interprets the results.
+- **No hints about the sample.** The agent is never told the cell type, cell line or condition. It has to infer identity from evidence, the way a scientist reading an unlabeled dataset would.
+- **Citations must be read, not matched.** A literature claim counts only after the agent fetches and reads the real PubMed abstract. A title match is never enough.
+- **Every claim is traceable.** A grounding checker verifies that each cited number and PMID traces back to a real tool call from the same run.
+- **Tested against failure.** A fault-injection benchmark checks that the agent notices planted data problems, and a negative control on fully shuffled data checks that it doesn't hallucinate relationships.
+- **Findings face an adversary.** Each proposed novel finding is re-investigated by an independent Judger agent looking for artifacts and prior art.
 
 ## Architecture
 
+
 ```
-Agent-decided loader
-        ↓
-Fixed-core analyses
-        ↓
-Agent loop (planner)
-        |
-        +----------------------+----------------------+----------------------+----------------------+
-        |  check identity &    |  detect conditions   |  search literature    |   run an analysis      |
-        |   cross-modal fit    |   (treatment axis,   |   (PubMed: search,    |   (TF-motif corr.,     |
-        |  (markers, ARI       |       if any)        | then read abstract)   |   pathway enrich, etc.)|
-        +----------------------+----------------------+----------------------+----------------------+
-        |
-        ↓
-Judger
-(adversarial review of novel claims)
-        ↓
+Agent-decided loader ........ inspects file structure, picks a loading strategy
+        │
+        ▼
+Fixed-core analyses ......... QC · clustering · gene activity · chromVAR
+        │
+        ▼
+┌─► Agent loop (planner) ──── picks one tool per step:
+│       ├─ Check identity & cross-modal fit   (markers, ARI)
+│       ├─ Detect conditions                  (treatment axis, if any)
+│       ├─ Search literature                  (PubMed search → read abstract)
+│       └─ Run an analysis                    (regulons, peak-gene links, enrichment …)
+│               │
+└───────────────┘ results return to the planner until it's done
+        │
+        ▼
+Judger ...................... adversarial review of novel claims
+        │
+        ▼
 5-section report
-           
 ```
 
+## Output: a 5-section report
 
-## What it produces
+| # | Section | What it contains |
+|---|---|---|
+| 1 | **Dataset summary** | Deterministic RNA/ATAC QC, Leiden clustering with RNA-vs-ATAC cluster agreement, gene activity scores, and chromVAR motif deviations |
+| 2 | **Cross-modal validation** | The standard ArchR/Signac check: is a gene's RNA marker status confirmed by independently computed ATAC accessibility in its matched cross-modal cluster? |
+| 3 | **Known-biology checklist** | Claims from the literature, tested against this dataset (see below) |
+| 4 | **Fault-injection eval** | Corrupted-data scenarios run across four Claude models (Haiku, Sonnet, Opus, Fable) side by side |
+| 5 | **Novel findings** | Candidate discoveries beyond the checklist, each cross-examined by the Judger, plus a negative control on fully shuffled data |
 
-The flagship output is one comprehensive report per dataset, generated end to end by the agent:
+**How the checklist is built.** The agent first finds candidate claims with `search_pubmed`, then reads the actual abstract with `fetch_pubmed_abstracts` before citing anything. It then tests whether each claim holds in this dataset, aiming for up to 3 well-grounded claims per category:
 
-1. **Dataset summary** — deterministic RNA/ATAC QC, Leiden clustering with
-   RNA-vs-ATAC cluster agreement, gene activity scores, and real chromVAR-style motif deviations.
-2. **Gene activity + chromVAR + cross-modal validation** — the textbook ArchR/Signac check: is a
-   gene's RNA marker status confirmed by independently-computed ATAC accessibility in its real
-   cross-modal partner cluster?
-3. **Known-biology checklist**, built in two steps to find previously reported biological claims relevant to the data and confirm against actual data: (1) find claims in the
-   literature — `search_pubmed` for candidate titles, then `fetch_pubmed_abstracts` to actually
-   read the real abstract before citing anything, since a title match alone never counts; (2)
-   verify if the claim holds in this dataset. Aims for up to 3 well-grounded claims tested per category (RNA markers, motifs,
-   TF-expression-tracks-motif-accessibility).
-4. **Fault-injection eval** — corrupted-data scenarios (shuffled RNA-ATAC pairing, ATAC downsampling, injected doublets, cell-line label swaps, mixed sequencing sample) run across four Claude models (Haiku, Sonnet,
-   Opus, Fable) side by side, with a grounding checker verifying every cited number/PMID traces
-   back to a real tool call from that same run.
-   
-   
-5. **Novel findings** — candidate discoveries beyond the checklist, each cross-examined by an
-   adversarial Judger agent for artifacts and prior art, plus a negative control against
-   fully-shuffled data to check for hallucination.
+- RNA markers
+- Motifs
+- Distal peak-to-gene links
+- TF → target-gene regulon links
 
-Two full worked examples are committed in [`reports/examples/`](reports/examples/) — real output,
-not mockups.
+*Design note:* "a TF's expression tracks its own motif" was retired as a checklist category in favor of regulon links. It is a narrow and usually already-known pattern, whereas a TF tracking a specific *other* gene it is predicted to regulate is a more informative test. The TF-vs-own-motif analysis is still available as a tool.
 
-## Datasets used in the example reports
+**Fault-injection scenarios:** shuffled RNA-ATAC pairing, ATAC downsampling, injected doublets, cell-line label swaps, and a mixed sequencing sample.
 
-- **Public — 10x Genomics PBMC 10k Multiome.** A real, publicly downloadable same-cell RNA+ATAC
-  dataset of healthy peripheral blood mononuclear cells. One unlabeled donor sample, no cell-line
-  or condition metadata — the agent has to reconstruct cell-type identity from markers alone.
-- **Private — an unpublished multi-cell-line, multi-condition multiome dataset (the author's
-  own).** Real same-cell RNA+ATAC data pooling several distinct cell lines, with genotype-
-  confirmed ground truth available for scoring only — never told to the agent. The data source is not disclosed.
+📄 Two full worked reports are in [`reports/examples/`](reports/examples/).
+
+## Analysis methods
+
+| Analysis | Method / package | Question it answers |
+|---|---|---|
+| RNA QC | scanpy (`pp.calculate_qc_metrics`) + Scrublet | Genes, UMIs and % mito per cell; predicted doublet score |
+| ATAC QC | SnapATAC2 (fragments import) | Fragments per cell, FRiP, TSS enrichment, nucleosome signal |
+| RNA clustering | scanpy (HVGs → PCA → Leiden) | Cell groupings from the transcriptome alone |
+| ATAC clustering | muon (TF-IDF → LSI, depth component dropped) → Leiden | Cell groupings from chromatin accessibility alone |
+| Cross-modal cluster agreement | Adjusted Rand Index (RNA vs. ATAC Leiden labels) | Do the two modalities independently agree on cell groupings? |
+| Gene activity | SnapATAC2 `make_gene_matrix` (fragments-based); peak-summation fallback when no fragments file exists | ArchR/Signac-style proxy: accessibility near a gene's promoter and body |
+| chromVAR motif deviations | pychromvar + JASPAR 2024 CORE (879 vertebrate motifs) + MOODS scanning | Per cell and motif: is chromatin at the motif's binding sites more or less open than a GC/accessibility-matched background? (TF-activity proxy) |
+| Cross-modal marker validation | Custom cell-overlap-matched RNA/ATAC cluster pairing | Is a gene's RNA marker status confirmed by elevated ATAC gene activity in the matched cluster? |
+| TF-motif self-tracking | Spearman (TF RNA vs. its own chromVAR deviation) | Does a TF's transcript level track its own motif activity? |
+| Peak-to-gene links | Spearman (distal peak accessibility vs. gene RNA), BH-corrected and effect-size-gated | Does one specific distal peak, outside the gene's own activity window, track that gene's expression? (Cicero/ArchR-style) |
+| Regulon inference (TF → target) | JASPAR motif in a target's promoter or significant distal peak, then Spearman (TF RNA vs. target RNA) | Does a TF's RNA track a specific gene it is predicted to regulate? (SCENIC+/RcisTarget-lite) |
+| Pathway enrichment | Enrichr (GO Biological Process) | What is a gene set, such as cluster markers, collectively involved in? |
+| Literature grounding | PubMed E-utilities (`search_pubmed` + `fetch_pubmed_abstracts`) | Is a claim reported in a real abstract that was actually read? |
+| Cell-line identity resolution | EBI Cellosaurus via DepMap Model ID lookup | Resolves a coded `ACH-XXXXXX` ID in the metadata to a real cell-line name |
+| Fault-injection eval | Synthetic corruption scenarios across 4 Claude models | Does the agent notice planted data problems, and how does that vary by model? |
+| Adversarial judging | Independent Judger agent | Is a proposed finding likely an artifact, or already known? |
+
+## Datasets in the example reports
+
+- **Public: 10x Genomics PBMC 10k Multiome.** Publicly available same-cell RNA + ATAC data from healthy peripheral blood mononuclear cells. One unlabeled donor with no cell-line or condition metadata, so the agent has to reconstruct cell-type identity from markers alone.
+- **Private: an unpublished multi-cell-line multiome dataset (the author's own).** Same-cell RNA + ATAC data pooling several cell lines. Genotype-confirmed ground truth is used only for scoring and is never shown to the agent. The data source is not disclosed.
 
 ## Quickstart
 
-### See the demo (public PBMC data, fastest path)
+### 1. Set up
 
 ```bash
 conda env create -f environment.yml       # or: pip install -e .[dev]
 cp .env.example .env                      # add your ANTHROPIC_API_KEY (never committed)
-make demo                                 # one real agent investigation, ~10-25s, ~$0.02
 ```
 
-`make demo` runs against a small, already-committed cache (`demo_cache/agent_demo_core.h5mu`,
-150 cells, ~46MB — see `agent/demo_fixed_core_cache.py`), so it's genuinely fast on a fresh
-clone with no data download needed (a real run: 24s, $0.022). It's illustrative only, at a small
-subsample — see `reports/examples/` for the real, full-scale analyses this project's flagship
-reports are built from. It asks one fixed default question unless you give it your own:
+### 2. Run the demo (no data download)
+
+```bash
+make demo
+```
+
+The demo runs on a small cache committed to the repo, so it works on a fresh clone. A typical run takes about **14 seconds** and costs about **$0.009**.
+
+By default it asks one fixed question, chosen to showcase the `regulon_inference` tool:
+
+> Does GATA3 regulate any specific target gene in this dataset, not just its own motif?
+
+Ask your own with `QUESTION=`:
 
 ```bash
 make demo QUESTION="does CD3E mark T cells in this dataset?"
+make demo QUESTION="does SPI1 regulate CD14 in this dataset?"
+make demo QUESTION="is there a distal enhancer for CD3E?"   # exercises peak_to_gene_links
 ```
 
-Want the raw data and the full-scale pipeline (needed for the fresh-report-generation command
-below)? That's a separate, larger download, not needed for `make demo` itself:
+- **Data:** `demo_cache/agent_demo_core.h5mu` (150 cells, ~85 MB), built by `agent/demo_fixed_core_cache.py`
+- **Tools:** the same 13-tool toolset as the full pipeline
+
+> **Note:** The demo is illustrative only, since it runs on a small subsample. The full-scale analyses are in [`reports/examples/`](reports/examples/). If you'd rather not run anything, those reports are the finished output of this exact pipeline.
+
+### 3. Run tests
 
 ```bash
-bash scripts/download_pbmc_data.sh        # ~3.3GB: PBMC 10k Multiome + hg38 2bit genome
+make test
 ```
 
-The *first* real run of the full fixed-core pipeline on that raw data (QC, clustering, gene
-activity, motif deviations, at the real 11,909-cell scale) takes on the order of an hour —
-dominated by chromVAR's motif-deviation permutation step at full scale, not the ATAC fragments
-sort — a one-time, disclosed cost, never triggered by `make demo` itself.
+### 4. Full-scale pipeline (optional)
+
+Download the raw data (not needed for the demo):
 
 ```bash
-make test    # full test suite
+bash scripts/download_pbmc_data.sh        # ~3.3 GB: PBMC 10k Multiome + hg38 2bit genome
 ```
 
-Don't want to run anything yourself? The two committed reports in `reports/examples/` are the
-finished output of exactly this pipeline — just read those.
+The first full run of the fixed-core pipeline (QC, clustering, gene activity, TF-gene linkage on all 11,909 cells) takes roughly an hour, mostly chromVAR's motif-deviation permutation step. This is a one-time cost and is never triggered by `make demo`.
 
-Want the full comprehensive report, generated fresh? That's one line, run explicitly since it
-costs real money across several agent calls:
+Generate a full report (this makes several paid agent calls):
 
 ```bash
 python -c "from multiome_agent.agent.report_generator import generate_report; \
-            generate_report('tenx-cell-ranger', model='claude-opus-5')"
+           generate_report('tenx-cell-ranger', model='claude-opus-5')"
 ```
 
-### Using this on your own data
+## Using your own data
 
-Both a single combined file (one 10x-style `.h5` with RNA and ATAC together) and separate
-per-modality files (an RNA `.h5ad` and an ATAC `.h5ad`) are supported — you don't tell the agent
-which one you have. It inspects your files' real structure and decides for itself which loading
-strategy applies (see "Architecture" above).
+Two input layouts are supported, and you don't need to say which one you have. The agent inspects your files' structure and picks the loading strategy itself:
 
-The agent workflow will run through QC, cell identity
-discovery, the literature-grounded checklist, and adversarially-judged novel findings.
+- a single combined 10x-style `.h5` (RNA and ATAC together), or
+- separate per-modality files (an RNA `.h5ad` and an ATAC `.h5ad`).
 
+**1. Point `config/local_paths.yaml` (gitignored) at your files.**
 
-1. Point `config/local_paths.yaml` (gitignored) at your own files. Separate per-modality files:
-   ```yaml
-   shareseq_rna_h5ad: /path/to/your_rna_all_genes.h5ad
-   shareseq_atac_h5ad: /path/to/your_atac_peaks.h5ad
-   ```
-   Or a single combined 10x-style `.h5` file with both modalities together:
-   ```yaml
-   tenx_matrix_h5: /path/to/your_combined_rna_and_atac.h5
-   ```
-2. Load, letting the agent decide the loading strategy from your files' real structure:
-   ```python
-  from multiome_agent.data.dispatch import load_fixed_core_from_local_config                                   
-  mdata, loader_decision = load_fixed_core_from_local_config(model="claude-opus-5")
-   ```
-   
-      
-3. Call just the pieces you want on QC and hypothesis discovery on your data:
-   ```python
-   from multiome_agent.agent.shareseq_qc_summary import format_shareseq_qc_summary, shareseq_fixed_core_summary
-   from multiome_agent.agent.checklist_generator import generate_checklist
-   from multiome_agent.agent.novelty import propose_novel_findings, judge_novel_findings
+Separate per-modality files:
 
-   qc_summary = format_shareseq_qc_summary(shareseq_fixed_core_summary(mdata))
-   items, _ = generate_checklist(mdata, qc_summary, model="claude-opus-5")
-   checklist_summary = "\n".join(f"- ({i.category}) {i.claim} [PMID {i.pmid}]" for i in items)
-   findings, _ = propose_novel_findings(mdata, qc_summary, checklist_summary=checklist_summary, model="claude-opus-5")
-   judged = judge_novel_findings(findings, mdata, qc_summary, model="claude-opus-5")
-   ```
----
+```yaml
+shareseq_rna_h5ad: /path/to/your_rna_all_genes.h5ad
+shareseq_atac_h5ad: /path/to/your_atac_peaks.h5ad
+```
 
-**The pipeline also has a working drug/condition-detection branch — per-arm QC and
-condition-specific literature grounding for datasets with a real treatment axis — fully built and
-tested. It's not exercised in either example report here: the public PBMC data is control-only,
-and the private dataset's real condition arm involves actual drug identities that can't be shown
-in a public repo.**
+Or one combined file:
 
+```yaml
+tenx_matrix_h5: /path/to/your_combined_rna_and_atac.h5
+```
 
+**2. Load the data.**
 
-## Roadmap: future analysis-menu additions coming soon
+```python
+from multiome_agent.data.dispatch import load_fixed_core_from_local_config
 
-The current analysis menu (gene activity, chromVAR motif deviations, TF-motif self-tracking,
-per-cluster differential markers) covers the textbook cross-modal validation but not the more
-mechanistic questions a real regulatory-genomics analysis would ask next. Candidates for future
-validated wrappers, in roughly the order they'd add the most value:
+mdata, loader_decision = load_fixed_core_from_local_config(model="claude-opus-5")
+```
 
-- **Peak-to-gene links (cis-co-accessibility, à la Cicero/ArchR).** Right now, "distal-enhancer
-  regulation" is one of the explanations the agent is *allowed* to reach for when RNA and ATAC
-  disagree (see core principle 2), but there's no tool that actually tests it — it can only look
-  at gene-body/promoter-proximal accessibility. A real peak-to-gene linkage score would let it
-  check whether a DISTAL peak's accessibility (not the gene's own gene-activity score) tracks the
-  target gene's expression, closing the gap between "explainable discordance" and "explained."
-- **Peak-level differential accessibility between two named groups.** The menu currently only
-  offers per-cluster marker DE (RNA) and its gene-activity analog (ATAC) — there's no way to ask
-  "which peaks differ between cell line A and cell line B" or "which peaks differ between drug and
-  vehicle" directly. This would give the condition-detection branch (already built, not yet
-  exercised by either example dataset) a real per-arm result to report, not just per-arm cell
-  counts.
-- **Regulon inference (TF → target-gene-set, SCENIC+-style).** In practice, novelty proposals in
-  this project keep collapsing into "TF X's own RNA tracks its own motif" — a narrow,
-  easily-already-known pattern, because that's the richest signal the current toolset can surface.
-  A real regulon (does
-  a TF's RNA level track the COORDINATED expression of its *predicted target genes*, not just
-  itself?) is a structurally different, harder-to-already-know claim, and would give the novelty
-  step a genuinely different kind of candidate to propose instead of a rescoped version of the
-  same TF-motif-self-correlation check the checklist already runs.
+**3. Run QC, the checklist, and novel-finding discovery.**
+
+```python
+from multiome_agent.agent.shareseq_qc_summary import format_shareseq_qc_summary, shareseq_fixed_core_summary
+from multiome_agent.agent.checklist_generator import generate_checklist
+from multiome_agent.agent.novelty import propose_novel_findings, judge_novel_findings
+
+qc_summary = format_shareseq_qc_summary(shareseq_fixed_core_summary(mdata))
+
+items, _ = generate_checklist(mdata, qc_summary, model="claude-opus-5")
+checklist_summary = "\n".join(f"- ({i.category}) {i.claim} [PMID {i.pmid}]" for i in items)
+
+findings, _ = propose_novel_findings(mdata, qc_summary, checklist_summary=checklist_summary, model="claude-opus-5")
+judged = judge_novel_findings(findings, mdata, qc_summary, model="claude-opus-5")
+```
+
+## Treatment / condition branch
+
+The pipeline also includes a fully built and tested drug/condition-detection branch, with per-arm QC and condition-specific literature grounding for datasets that have a real treatment axis. It isn't shown in the example reports: the public PBMC data is control-only, and the private dataset's treatment arm involves drug identities that can't be published.
+
+## Build log
+The development history is split into two logs, both written as the work happened (every bug, wrong turn and fix, with evidence):
+
+- [`PROGRESS.md`](PROGRESS.md) covers the core pipeline, built before peak-to-gene links and regulon inference were added.
+- [`PROGRESS_phase2.md`](PROGRESS_phase2.md) covers those two analyses and the changes that came with them.

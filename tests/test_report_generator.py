@@ -110,14 +110,14 @@ def test_render_section3_groups_by_category_and_flags_missing():
     items = [ChecklistItem("rna_marker", "CD14", "monocyte marker", "123", "Nature", "2020", True)]
     text = _render_section3(items, "This looks like PBMC based on markers.")
     assert "CD14" in text
-    assert "no grounded, data-present candidate" in text  # motif/tf_motif_tracking empty
+    assert "no grounded, data-present candidate" in text  # motif/peak_to_gene/regulon_target empty
     assert "no candidate this run clearly failed" in text  # nothing rejected
 
 
 def test_render_section3_splits_confirmed_and_rejected():
     items = [
         ChecklistItem("rna_marker", "CD14", "monocyte marker", "123", "Nature", "2020", True),
-        ChecklistItem("tf_motif_tracking", "JUNB", "should track its own motif", "456", "Cell", "2021", False),
+        ChecklistItem("regulon_target", "SPI1->JUNB", "should regulate JUNB", "456", "Cell", "2021", False),
     ]
     text = _render_section3(items, "This looks like PBMC based on markers.")
     confirmed_idx = text.index("## Confirmed by data")

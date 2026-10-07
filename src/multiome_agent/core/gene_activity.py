@@ -54,25 +54,32 @@ def compute_gene_activity(mdata: MuData, snap_data) -> pd.DataFrame:
     )
 
 
-def _load_protein_coding_gene_windows(upstream_bp: int = 2000) -> pd.DataFrame:
-    """Gene coordinate windows for peak-summation-based gene activity (see
-    `compute_gene_activity_from_peaks`), parsed directly from the same
-    cached GENCODE annotation `compute_gene_activity` already uses
-    (`snap.genome.hg38.annotation`, a local GFF3 file snapatac2 downloads
-    once and reuses). Reusable as-is for ANY hg38/GRCh38 dataset -- human
-    gene coordinates are a property of the genome build, not of which cells
-    were sequenced -- so this needs no separate download for a new dataset,
-    only a genome-build check that the dataset's own peaks are really hg38
-    (done by the caller, not here; see `shareseq_pipeline._sanity_check_peak_sequences`).
+def load_protein_coding_gene_coords() -> pd.DataFrame:
+    """Raw (un-extended) gene-body coordinates (chrom/start/end/strand) for
+    every protein-coding gene, parsed from the same cached GENCODE
+    annotation `compute_gene_activity` already uses (`snap.genome.hg38.annotation`,
+    a local GFF3 file snapatac2 downloads once and reuses). Reusable as-is
+    for ANY hg38/GRCh38 dataset -- human gene coordinates are a property of
+    the genome build, not of which cells were sequenced -- so this needs no
+    separate download for a new dataset, only a genome-build check that the
+    dataset's own peaks are really hg38 (done by the caller, not here; see
+    `shareseq_pipeline._sanity_check_peak_sequences`).
 
     Restricted to `gene_type=protein_coding` (~20K of GENCODE's ~62K "gene"
-    rows) since those are what marker/TF lookups actually need, not
-    pseudogenes/lncRNAs. A handful of gene symbols (7 among autosomal
+    rows) since those are what marker/TF/peak-link lookups actually need,
+    not pseudogenes/lncRNAs. A handful of gene symbols (7 among autosomal
     protein-coding genes, e.g. duplicated paralog annotations like
     HERC3/MATR3) appear as more than one GENCODE "gene" record; these are
-    merged into a single window per symbol (min start, max end) rather than
-    picked arbitrarily, checked directly against this exact file rather
-    than assumed.
+    merged into a single coordinate range per symbol (min start, max end)
+    rather than picked arbitrarily, checked directly against this exact
+    file rather than assumed.
+
+    Factored out of what used to be `_load_protein_coding_gene_windows`
+    (now a thin promoter-extension wrapper around this) so
+    `core.peak_to_gene_links` can reuse the same parsed coordinates without
+    a second GENCODE-parsing implementation -- gene-activity's promoter-
+    extended window and peak-to-gene's "proximal exclusion zone" need to
+    agree on the same gene body, not two independently-parsed ones.
     """
     path = snap.genome.hg38.annotation
     rows = []
@@ -88,17 +95,34 @@ def _load_protein_coding_gene_windows(upstream_bp: int = 2000) -> pd.DataFrame:
                 rows.append((fields[0], int(fields[3]), int(fields[4]), fields[6], match.group(1)))
 
     genes = pd.DataFrame(rows, columns=["chrom", "start", "end", "strand", "gene_name"])
-    genes = genes.groupby(["chrom", "gene_name", "strand"], as_index=False).agg(
+    return genes.groupby(["chrom", "gene_name", "strand"], as_index=False).agg(
         start=("start", "min"), end=("end", "max")
     )
-    # Promoter-extend upstream of the TSS (start for "+", end for "-"),
-    # leaving the downstream gene-body boundary untouched -- ArchR/Signac's
-    # default gene-activity window.
-    win_start = np.where(genes["strand"] == "+", genes["start"] - upstream_bp, genes["start"])
-    win_end = np.where(genes["strand"] == "+", genes["end"], genes["end"] + upstream_bp)
-    genes["win_start"] = np.clip(win_start, 0, None)
-    genes["win_end"] = win_end
-    return genes[["chrom", "gene_name", "win_start", "win_end"]]
+
+
+def promoter_extend_gene_windows(coords: pd.DataFrame, upstream_bp: int) -> pd.DataFrame:
+    """Promoter-extend upstream of the TSS (start for "+", end for "-"),
+    leaving the downstream gene-body boundary untouched -- ArchR/Signac's
+    default gene-activity window. Pure arithmetic over an already-loaded
+    `load_protein_coding_gene_coords()`-shaped frame (chrom/gene_name/
+    strand/start/end) -- split out from `_load_protein_coding_gene_windows`
+    so a caller that already has `coords` in hand (e.g.
+    `core.peak_to_gene_links`, which needs both the raw coords for one gene
+    AND the extended windows for every OTHER gene) doesn't have to re-parse
+    the whole GENCODE annotation file a second time just to get this.
+    """
+    win_start = np.where(coords["strand"] == "+", coords["start"] - upstream_bp, coords["start"])
+    win_end = np.where(coords["strand"] == "+", coords["end"], coords["end"] + upstream_bp)
+    coords = coords.assign(win_start=np.clip(win_start, 0, None), win_end=win_end)
+    return coords[["chrom", "gene_name", "win_start", "win_end"]]
+
+
+def _load_protein_coding_gene_windows(upstream_bp: int = 2000) -> pd.DataFrame:
+    """Promoter-extended gene windows for peak-summation-based gene activity
+    (see `compute_gene_activity_from_peaks`) -- builds on
+    `load_protein_coding_gene_coords`'s raw gene-body coordinates.
+    """
+    return promoter_extend_gene_windows(load_protein_coding_gene_coords(), upstream_bp)
 
 
 def _sum_peaks_into_gene_windows(

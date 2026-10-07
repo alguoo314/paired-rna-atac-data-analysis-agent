@@ -9,7 +9,10 @@ full-scale analyses this project's flagship reports are built from.
 Ask your own question about the cached PBMC data:
     make demo QUESTION="does CD3E mark T cells in this dataset?"
     python scripts/demo.py "does CD3E mark T cells in this dataset?"
-With no question given, falls back to a default SPI1 TF-motif-tracking question.
+With no question given, falls back to a default GATA3 regulon-inference question --
+deliberately showcasing `regulon_inference` (a TF tracking SPECIFIC other genes it's
+predicted to regulate, not just its own motif) rather than the narrower `tf_motif_correlation`
+check a plain TF-vs-own-motif question would exercise.
 """
 
 from __future__ import annotations
@@ -21,8 +24,7 @@ from multiome_agent.agent.loop import run_agent
 from multiome_agent.agent.qc_summary import fixed_core_summary, format_qc_summary
 
 DEFAULT_QUESTION = (
-    "In this PBMC dataset, does SPI1 expression correlate with its own "
-    "motif's accessibility, and is that consistent with SPI1's known biology?"
+    "Does GATA3 regulate any specific target gene in this dataset, not just its own motif?"
 )
 
 

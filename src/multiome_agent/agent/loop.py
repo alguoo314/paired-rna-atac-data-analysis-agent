@@ -27,6 +27,8 @@ from multiome_agent.core.condition_detection import condition_group_qc, detect_c
 from multiome_agent.core.cross_modal_validation import cross_modal_marker_validation
 from multiome_agent.core.identity_metadata import detect_identity_columns
 from multiome_agent.logging_utils import get_logger
+from multiome_agent.menu.peak_to_gene_links import peak_to_gene_links
+from multiome_agent.menu.regulon_inference import regulon_inference
 from multiome_agent.menu.tf_motif_correlation import tf_motif_correlation
 from multiome_agent.tools.code_execution import run_analysis_code
 from multiome_agent.tools.depmap import resolve_depmap_id
@@ -61,6 +63,56 @@ TOOLS = [
                 "gene": {"type": "string", "description": "TF gene symbol, e.g. SPI1"},
             },
             "required": ["gene"],
+        },
+    },
+    {
+        "name": "peak_to_gene_links",
+        "description": (
+            "Test whether any DISTAL peak's accessibility (NOT the gene's own gene-activity "
+            "score, which only covers the gene body + promoter) tracks a gene's own RNA "
+            "expression, across cells in this dataset. Use this to actually check a "
+            "distal-enhancer-regulation explanation for RNA-ATAC discordance, rather than just "
+            "naming it as a possibility. Returns the top candidate linked peaks (distance, "
+            "Spearman rho, BH-corrected q-value) and whether any cleared BOTH a q<0.05 AND an "
+            "|rho|>=0.2 bar (q-value alone is too permissive at real cell counts), or an "
+            "error if the gene isn't in the data or has no GENCODE coordinates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "gene": {"type": "string", "description": "Gene symbol, e.g. CD14"},
+            },
+            "required": ["gene"],
+        },
+    },
+    {
+        "name": "regulon_inference",
+        "description": (
+            "Given a transcription factor gene symbol, finds its candidate target genes via real "
+            "motif + chromatin evidence (the TF's own JASPAR motif present in a target's own "
+            "promoter, or in a distal peak that itself significantly links to that target's "
+            "expression), then reports, PER TARGET GENE, the Spearman correlation between the "
+            "TF's own RNA and that SPECIFIC target gene's own RNA -- never an aggregate score "
+            "across many genes, and never the TF's own expression standing in for a target. Use "
+            "this for a structurally different, harder-to-already-know claim than "
+            "tf_motif_correlation: does this TF's RNA actually track a SPECIFIC other gene it's "
+            "predicted to regulate? The returned `targets` list is CAPPED (an abundant TF motif "
+            "can have thousands of real candidates) -- if you already have one specific target "
+            "gene in mind (e.g. verifying a literature-reported TF-target pair), pass "
+            "`target_gene` so its real entry is guaranteed to appear even if it wouldn't "
+            "otherwise make the cap. Returns an error if the TF isn't in the data, has no matching "
+            "motif, or this dataset's motif-match data isn't available."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tf_gene": {"type": "string", "description": "Transcription factor gene symbol, e.g. SPI1"},
+                "target_gene": {
+                    "type": "string",
+                    "description": "Optional: a specific target gene you want a guaranteed answer for, e.g. CD14",
+                },
+            },
+            "required": ["tf_gene"],
         },
     },
     {
@@ -331,6 +383,10 @@ def _execute_tool(name: str, tool_input: dict, mdata, qc_summary: str | None, co
     try:
         if name == "tf_motif_correlation":
             result = tf_motif_correlation(mdata, tool_input["gene"])
+        elif name == "peak_to_gene_links":
+            result = peak_to_gene_links(mdata, tool_input["gene"])
+        elif name == "regulon_inference":
+            result = regulon_inference(mdata, tool_input["tf_gene"], target_gene=tool_input.get("target_gene"))
         elif name == "search_pubmed":
             result = search_pubmed(tool_input["query"])
         elif name == "fetch_pubmed_abstracts":
