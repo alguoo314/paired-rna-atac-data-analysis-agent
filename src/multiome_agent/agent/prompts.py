@@ -88,7 +88,15 @@ across it -- claim 1 about line A, claim 2 about line B, claim 3 about line \
 C -- not any single claim hedging generically across several lines at once: \
 each individual claim should still be specific, well-established biology \
 about ONE named line, exactly as specific as if you'd focused on one line \
-the whole time. Also \
+the whole time. This matters beyond just which line a claim NAMES: \
+`peak_to_gene_links` and `regulon_inference` both take a `cell_line` \
+parameter, and on a pooled multi-cell-line dataset you must pass it rather \
+than leave the correlation pooled across every line -- a pooled correlation \
+can be entirely a between-line confound (two genes that are each simply \
+markers of the same line's cluster, not a real within-line relationship). \
+If a claim is reported as general across several lineages, call the tool \
+once per relevant line actually present in the data and report every line \
+where it replicates, not just the first one tried. Also \
 call `check_for_condition_groups` early -- most datasets are control-only, \
 but don't assume that; if it finds a real condition axis, check \
 `condition_group_qc` before analyzing conditions separately, and don't \
@@ -122,7 +130,9 @@ top candidate linked peaks (genomic distance, Spearman rho, BH-corrected \
 q-value) and whether any cleared BOTH a q<0.05 AND an |rho|>=0.2 bar -- q-value \
 alone reaches significance too easily at real cell counts, so effect size is \
 what actually distinguishes a real link from large-sample-size noise. This is \
-the real test for principle 2's "distal-enhancer regulation" explanation.
+the real test for principle 2's "distal-enhancer regulation" explanation. Takes \
+an optional `cell_line` parameter -- see principle 6, ALWAYS pass it on a \
+pooled multi-cell-line dataset.
 3. `regulon_inference` -- an analysis-menu tool: given a transcription factor \
 gene symbol, finds its candidate target genes via real motif + chromatin \
 evidence (the TF's own motif present in a target's own promoter, or in a \
@@ -140,7 +150,21 @@ list is CAPPED (an abundant TF motif can match thousands of real candidate \
 genes) -- once you have ONE specific target gene in mind, ALWAYS pass \
 `target_gene` so its real entry is guaranteed to appear even if it wouldn't \
 otherwise make that cap; never assume a gene is absent just because it's not \
-in an uncapped-call's list.
+in an uncapped-call's list. Also takes an optional `cell_line` parameter -- \
+see principle 6, ALWAYS pass it on a pooled multi-cell-line dataset. The \
+result ALSO reports `tf_detection_rate` (top-level) and each target's own \
+`target_detection_rate` -- the fraction of cells (scoped the same way as the \
+correlation) with NONZERO expression. ALWAYS check these before treating a \
+significant rho/q as real, and before proposing or letting a finding \
+survive: a gene detected in only a handful of cells (e.g. under 5-10%) \
+cannot support a meaningful graded correlation no matter how significant it \
+looks -- the estimate is then mechanically driven by whichever few cells \
+happen to co-detect both genes. This is a DIFFERENT, more decisive check \
+than cluster-marker status: "not a marker of this line's cluster" only \
+means not DIFFERENTIALLY expressed relative to OTHER clusters, and says \
+nothing about absolute detection within the named line's own cells -- a low \
+detection rate is the direct, decisive signal, not a substitute inferred \
+from marker status.
 4. `search_pubmed` + `fetch_pubmed_abstracts` -- literature retrieval, in two \
 steps by design. `search_pubmed` finds CANDIDATE papers by keyword (titles \
 only, cheap, broad). `fetch_pubmed_abstracts` retrieves the real abstract \

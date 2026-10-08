@@ -670,3 +670,79 @@ the new default actually runs clean (`make demo`, no QUESTION override): 2 turns
 ~14s, same 20-significant-target GATA3 result as the spot-check. Updated the script's own
 docstring and `README.md`'s demo-cache paragraph (removed the stale "24s/$0.022" real-run number,
 which was from the OLD default's own call, and the stale "example" question it used) to match.
+
+## Step 16: Per-cell-line scoping for `peak_to_gene_links`/`regulon_inference`, a fresh discovery pass, and a detection-rate fix
+
+Owner noticed the real risk: on the shareseq dataset (8 pooled cell lines), every
+`peak_to_gene_links`/`regulon_inference` correlation was computed POOLED across all 5,814 cells,
+never scoped to one real line. Confirmed by grep: no `cluster`/`cell_line`/`subset`/`mask` logic
+existed anywhere in either core module before this step. Pooling risks reporting a between-line
+confound (two genes each simply marking the same line's cluster) as a real within-line
+relationship -- exactly the failure mode the adversarial Judger had already independently caught
+on MYCN->GNG7 (see Step 12).
+
+**Fix:** added `cell_line: str | None = None` to both `peak_to_gene_links()` and
+`infer_regulon_targets()` -- subsets the cell axis ONCE at matrix-construction time (before any
+rank-zscore/correlation code runs), so every downstream calculation automatically respects the
+scoping with no further changes. `None` (default) stays pooled, so every existing caller/dataset
+without a cell-line concept (e.g. PBMC) is unaffected. Propagated through the full stack: menu
+wrappers -> agent tool schemas/dispatch -> `CORE_SYSTEM_PROMPT` principle 6 -> checklist/novelty
+prompts and `ChecklistItem`/`JudgedFinding`'s new `cell_lines: list[str]` field -> the free
+shortlist path -> report rendering (`_render_section3`/`_render_judged_finding` now append
+"(confirmed in: ...)"/" (tested in: ...)" when `cell_lines` is non-empty). Added synthetic
+confound-demonstrating tests to both core modules (hand-verified via direct scipy: pooled
+rho=0.714 vs. within-line rho=-0.152 on a planted two-line step-function confound). Also fixed the
+cheap shortlist path (`agent/shortlist.py`), which had the SAME bug one level up: it only ever
+passed `identities[0]` (the single most-abundant line) into EVERY category's candidate generation
+and verification, so even a correctly-scoped `cell_line` call was always scoped to the same one
+line, never rotating -- `shortlist_checklist_items_for_category` now rotates candidate-generation
+across every real line (so successive claims in one category name different lines, per principle
+6's "span across lines") and free-checks replication across every OTHER line too (pure numpy, no
+added LLM cost), recording every line a claim actually holds in. 253/253 full-suite tests pass.
+
+**Free, deterministic sanity check against the real shareseq cache** (before spending anything):
+NFE2L2->NQO1, the dataset's one "Confirmed by data" regulon item, pooled gives rho=0.1319
+(q=5.22e-22, passes on q alone at this sample size) -- but scoped to each of the 8 real lines
+individually, NONE replicate (all \|rho\|<0.06, including both lung lines NCI-H838/HCC-44, the
+actual biological context for the claim). Confirms the pooled "confirmed" item is itself a
+between-line-pooling artifact that nothing had tested before now. Separately, a free sweep of ~22
+well-established literature TF-target pairs (picked from background knowledge, not an agent call)
+against all 8 lines found only ONE real, cell-line-specific signal: ESR1->GREB1 and (second sweep)
+GATA3->ESR1, both significant specifically in T-47D and null everywhere else -- every other
+lineage (lung, osteosarcoma, Ewing sarcoma, ovarian clear-cell, glioma) came back empty, often
+because the literature TF itself (NKX2-1, SOX2, OLIG2) isn't even in this dataset's RNA panel.
+
+**Fresh paid discovery pass** (owner-authorized, explicitly "just try a few, don't spend too
+much"): cheap Haiku shortlist for `regulon_target` found 0/2 confirmed; a scoped `claude-sonnet-5`
+fallback ($2.14) tried FLI1->NR0B1 (A-673) and ESR1->PGR (T-47D), both rejected (no motif
+candidacy in this dataset at all) -- independently reproducing what the free sweep had already
+found. The two real hits (ESR1->GREB1, GATA3->ESR1) were instead added via the cheap
+literature-citation step alone (real PMIDs, ~$0 cost), since the data-verification was already
+done for free. A narrower follow-up novelty pass -- `regulon_inference` ONLY, `cell_line` ALWAYS
+passed, 3 candidates tried, `claude-sonnet-5` -- proposed 2 findings ($0.57): FLI1->SUGCT in A-673
+(survived judging, $1.19) and MYCN->MNX1 in SJSA1 (struck down, $2.04). Total new spend: $5.94.
+Updated `reports/examples/shareseq-multi-cell-lines-report.md`: kept NFE2L2->NQO1 pooled exactly
+as originally recorded (per owner's explicit instruction) with an added honest per-line caveat;
+added the 2 new confirmed regulon_target items, 2 new rejected items, and both new novel findings;
+updated the cost breakdown (+$5.94, new total $36.37).
+
+**Bug the Judger's own struck-down verdict for MYCN->MNX1 revealed:** the owner asked whether
+"not a cluster marker" (the Judger's stated reasoning) actually means "not expressed" -- it
+doesn't; marker status is relative to OTHER clusters, not absolute detection. Direct check: MYCN
+is detected (nonzero) in only 1/773 SJSA1 cells (0.1%) and MNX1 in just 12/773 (1.6%) -- both
+RARER within SJSA1 than their already-low whole-dataset rates (2.8%/5.3%), confirming the real,
+more decisive reason the finding is an artifact: too few informative cells for a correlation to
+mean anything, not a cross-cluster-marker mismatch. (Overall matrix nonzero fraction 21.3%,
+confirming this is real sparse single-cell data and not an imputed/densified matrix, so detection
+rate is a meaningful signal.) Replaced the report's struck-down reasoning for this finding with
+the detection-rate explanation.
+
+**Fix, generalized (no rerun needed to verify -- pure code + doc change, covered by existing
+tests' assertions on result-dict shape):** `infer_regulon_targets` now ALWAYS returns
+`tf_detection_rate` (top-level) and each target's own `target_detection_rate` -- computed for free
+from the SAME (already cell_line-scoped) expression arrays already built for the correlation, no
+extra tool call needed. Updated `CLAUDE.md` design principle 5, `CORE_SYSTEM_PROMPT`'s tool
+description, the menu wrapper's docstring, and both `_novelty_question`/`_judger_question` in
+`novelty.py` to require checking detection rate before trusting or letting survive any
+`regulon_inference`/`peak_to_gene_links`-based finding, explicitly flagging that cluster-marker
+status is NOT a substitute for it.

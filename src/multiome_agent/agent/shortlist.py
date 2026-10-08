@@ -181,11 +181,18 @@ def judge_abstract_supports_claim(claim: str, abstract: str, model: str = SHORTL
     return bool((result or {}).get("supports_claim"))
 
 
-def verify_candidate_in_data(mdata, category: str, primary: str) -> bool:
+def verify_candidate_in_data(mdata, category: str, primary: str, cell_line: str | None = None) -> bool:
     """Deterministic, zero-LLM check of whether `primary` actually shows the
     expected signal in THIS dataset -- reuses the same already-free
     analysis-menu tools the expensive agent path would call, just invoked
     directly instead of through a model's tool-use turn.
+
+    `cell_line`, for `peak_to_gene`/`regulon_target` only, restricts the
+    correlation to that one line's own cells -- see
+    `core.peak_to_gene_links`/`core.regulon_inference`'s docstrings for why
+    pooling across a multi-cell-line dataset is the wrong default. Ignored
+    for `rna_marker`/`motif`, which aren't pooled-correlation-based checks
+    in the first place.
     """
     try:
         if category == "rna_marker":
@@ -194,7 +201,7 @@ def verify_candidate_in_data(mdata, category: str, primary: str) -> bool:
             names = mdata.mod["atac"].uns.get("chromvar_motif_names")
             return bool(names) and best_motif_match(list(names), primary) is not None
         if category == "peak_to_gene":
-            result = _peak_to_gene_links(mdata, primary)
+            result = _peak_to_gene_links(mdata, primary, cell_line=cell_line)
             return "error" not in result and result["any_significant_distal_link"]
         if category == "regulon_target":
             tf, _, target = primary.partition("->")
@@ -204,7 +211,7 @@ def verify_candidate_in_data(mdata, category: str, primary: str) -> bool:
             # `target_gene=target` guarantees this specific gene's real entry
             # appears in the (otherwise capped) `targets` list -- see
             # `infer_regulon_targets`'s docstring for why that cap exists.
-            result = infer_regulon_targets(mdata, tf.strip(), target_gene=target)
+            result = infer_regulon_targets(mdata, tf.strip(), target_gene=target, cell_line=cell_line)
             if "error" in result:
                 return False
             return any(t["gene"] == target and t["significant"] for t in result["targets"])
@@ -213,7 +220,7 @@ def verify_candidate_in_data(mdata, category: str, primary: str) -> bool:
     return False
 
 
-def shortlist_checklist_items_for_category(mdata, identity: str, category: str, needed: int = 3, max_candidates: int = 5, model: str = SHORTLIST_MODEL):
+def shortlist_checklist_items_for_category(mdata, identities: list[str], category: str, needed: int = 3, max_candidates_per_line: int = 2, model: str = SHORTLIST_MODEL):
     """The full cheap path for one checklist category: recall -> verify in
     data (free) -> ONE targeted literature check per data-verified candidate
     (free search + one cheap judgment) -> up to `needed` confirmed
@@ -221,46 +228,81 @@ def shortlist_checklist_items_for_category(mdata, identity: str, category: str, 
     shortlist doesn't have enough real, confirmable candidates -- that's an
     honest result the caller falls back to expensive exploration to fill,
     not a bug.
+
+    `identities` is the FULL list of real lines present (not just the most
+    abundant one) -- on a multi-cell-line dataset this function rotates
+    through them one at a time, asking for a couple of candidates framed
+    around EACH line in turn, so that successive confirmed items in the
+    same category end up naming different lines (per CORE_SYSTEM_PROMPT
+    principle 6's "span across lines": the SET of claims should name
+    different lines, not all pile onto whichever line is most abundant).
+    For `peak_to_gene`/`regulon_target`, verification against the line that
+    FRAMED the claim is the real test of the claim as literally stated; on
+    top of that, this also checks every OTHER real line for free (it's a
+    deterministic numpy correlation, not an LLM call -- no added cost) and
+    records every line it actually replicates in via `cell_lines`, so a
+    claim that really is general across lineages gets to say so honestly.
     """
     from multiome_agent.agent.checklist_generator import ChecklistItem  # local import avoids a module cycle
 
     confirmed = []
-    for candidate in generate_shortlist_candidates(identity, category, n=max_candidates, model=model):
+    for line in identities:
         if len(confirmed) >= needed:
             break
-        primary, claim = candidate.get("primary", ""), candidate.get("claim", "")
-        if not primary or not claim:
-            continue
-        # Defensive normalization against a real observed failure mode: despite the
-        # prompt's explicit format requirement, a cheap model can still return a
-        # compound string for "peak_to_gene" (e.g. "CELL_LINE_DISTAL_ENHANCER->MYC"
-        # instead of bare "MYC") -- recover the real gene symbol (text after the
-        # LAST "->") rather than let a free-but-wasted shortlist attempt silently
-        # fall through to the expensive fallback path for a trivially fixable format
-        # slip. "regulon_target" has no equivalent safe recovery (there's no way to
-        # guess a missing target from a bare TF name), so a missing "->" there is
-        # left to fail honestly via `verify_candidate_in_data`.
-        if category == "peak_to_gene" and "->" in primary:
-            primary = primary.rsplit("->", 1)[-1].strip()
-        if not verify_candidate_in_data(mdata, category, primary):
-            continue
-        hits = search_pubmed(claim)
-        if not hits:
-            continue
-        pmid = hits[0]["pmid"]
-        abstract_data = fetch_pubmed_abstracts([pmid]).get(pmid)
-        if not abstract_data or not abstract_data.get("abstract"):
-            continue
-        if not judge_abstract_supports_claim(claim, abstract_data["abstract"], model=model):
-            continue
-        confirmed.append(ChecklistItem(
-            category=category, gene_or_motif=primary, claim=claim, pmid=pmid,
-            journal=abstract_data.get("journal", ""), year=str(abstract_data.get("year", "")),
-            confirmed_present_in_data=True,
-        ))
+        for candidate in generate_shortlist_candidates(line, category, n=max_candidates_per_line, model=model):
+            if len(confirmed) >= needed:
+                break
+            primary, claim = candidate.get("primary", ""), candidate.get("claim", "")
+            if not primary or not claim:
+                continue
+            # Defensive normalization against a real observed failure mode: despite the
+            # prompt's explicit format requirement, a cheap model can still return a
+            # compound string for "peak_to_gene" (e.g. "CELL_LINE_DISTAL_ENHANCER->MYC"
+            # instead of bare "MYC") -- recover the real gene symbol (text after the
+            # LAST "->") rather than let a free-but-wasted shortlist attempt silently
+            # fall through to the expensive fallback path for a trivially fixable format
+            # slip. "regulon_target" has no equivalent safe recovery (there's no way to
+            # guess a missing target from a bare TF name), so a missing "->" there is
+            # left to fail honestly via `verify_candidate_in_data`.
+            if category == "peak_to_gene" and "->" in primary:
+                primary = primary.rsplit("->", 1)[-1].strip()
+            # Scope peak_to_gene/regulon_target verification to the line that framed
+            # this specific candidate's claim -- pooling across every line in the
+            # dataset would risk reporting a between-line confound as a real
+            # within-line relationship (see core.peak_to_gene_links/
+            # core.regulon_inference's docstrings). Ignored for rna_marker/motif,
+            # which aren't pooled-correlation-based checks.
+            scoped_cell_line = line if category in ("peak_to_gene", "regulon_target") else None
+            if not verify_candidate_in_data(mdata, category, primary, cell_line=scoped_cell_line):
+                continue
+            replicated_lines = [scoped_cell_line] if scoped_cell_line else []
+            if category in ("peak_to_gene", "regulon_target"):
+                # Free (no LLM cost) deterministic check of whether this SAME
+                # candidate also replicates in every OTHER real line present --
+                # not required for confirmation, just honestly reported if true.
+                for other_line in identities:
+                    if other_line == line:
+                        continue
+                    if verify_candidate_in_data(mdata, category, primary, cell_line=other_line):
+                        replicated_lines.append(other_line)
+            hits = search_pubmed(claim)
+            if not hits:
+                continue
+            pmid = hits[0]["pmid"]
+            abstract_data = fetch_pubmed_abstracts([pmid]).get(pmid)
+            if not abstract_data or not abstract_data.get("abstract"):
+                continue
+            if not judge_abstract_supports_claim(claim, abstract_data["abstract"], model=model):
+                continue
+            confirmed.append(ChecklistItem(
+                category=category, gene_or_motif=primary, claim=claim, pmid=pmid,
+                journal=abstract_data.get("journal", ""), year=str(abstract_data.get("year", "")),
+                confirmed_present_in_data=True,
+                cell_lines=replicated_lines,
+            ))
     logger.info(
         "shortlist_checklist_items_for_category: %s/%s -> %d/%d confirmed from shortlist",
-        identity, category, len(confirmed), needed,
+        identities, category, len(confirmed), needed,
     )
     return confirmed
 

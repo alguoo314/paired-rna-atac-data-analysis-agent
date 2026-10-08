@@ -17,7 +17,7 @@ literature RAG, which `run_agent` already wires up.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from multiome_agent.agent.loop import TOOLS, AgentRunResult, run_agent
 from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
@@ -65,6 +65,18 @@ RECORD_CHECKLIST_ITEM_TOOL = {
                 "type": "boolean",
                 "description": "Whether you verified this gene/motif is actually usable in this dataset (via a real tool call), not just assumed",
             },
+            "cell_lines": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For \"peak_to_gene\"/\"regulon_target\" on a pooled multi-cell-line dataset ONLY: "
+                    "the real cell-line name(s) you passed as `cell_line` to peak_to_gene_links/"
+                    "regulon_inference where the result was actually significant. If the literature "
+                    "claim is general across lineages and you tested it in more than one relevant "
+                    "line, list EVERY line where it replicated, not just the first. Omit (or leave "
+                    "empty) for rna_marker/motif, or for any dataset with no cell-line concept."
+                ),
+            },
         },
         "required": ["category", "gene_or_motif", "claim", "pmid", "journal", "year", "confirmed_present_in_data"],
     },
@@ -111,6 +123,19 @@ wouldn't otherwise make that cap. Require `significant=true` for it in the resul
 TF's own RNA actually tracks that SPECIFIC target gene's own RNA in THIS dataset, with real \
 motif/chromatin evidence supporting candidacy, not just that both genes happen to be expressed.
 
+On a POOLED multi-cell-line dataset, categories 3 and 4 BOTH require real `cell_line` scoping -- \
+ALWAYS pass `cell_line` set to one specific real line's name to `peak_to_gene_links`/`regulon_inference` \
+rather than leaving the correlation pooled across every line. A pooled correlation can be ENTIRELY \
+a between-line confound: two genes that are each simply markers of the same line's cluster will \
+look strongly "linked" pooled with zero real within-line relationship -- this project's own \
+adversarial Judger has caught exactly that failure mode before. If the literature claim is reported \
+as general across several lineages (not restricted to one specific line), test it in a HANDFUL of \
+the dataset's actual relevant lines (not all 8+, just enough to check generality) and record \
+`cell_lines` as EVERY line where it came back significant, not just the first you tried -- that is \
+how a genuinely general claim gets reported as general, with real per-line evidence behind it \
+rather than one line's result stretched to stand for all of them. If it only replicates in one \
+line, `cell_lines` is just that one line -- an honest, narrower claim, not a failure.
+
 Deliberately NOT a category here: a transcription factor's own RNA tracking its own motif's \
 accessibility (`tf_motif_correlation`). That used to be category 3, but it's a narrower, \
 easily-already-known claim compared to "regulon_target" above (a TF tracking a SPECIFIC OTHER \
@@ -155,6 +180,13 @@ class ChecklistItem:
     journal: str
     year: str
     confirmed_present_in_data: bool
+    # Which cell line(s) this was actually verified significant in -- only
+    # meaningful for "peak_to_gene"/"regulon_target" on a pooled multi-cell-line
+    # dataset (see core.peak_to_gene_links/core.regulon_inference's `cell_line`
+    # parameter); empty for "rna_marker"/"motif" (not a pooled-correlation
+    # check) or any single-identity dataset (e.g. PBMC). More than one entry
+    # means the claim was tested in multiple lines and replicated in all of them.
+    cell_lines: list[str] = field(default_factory=list)
 
 
 _FALLBACK_CATEGORY_DESCRIPTIONS = {
@@ -163,29 +195,46 @@ _FALLBACK_CATEGORY_DESCRIPTIONS = {
     "peak_to_gene": (
         "a specific, literature-reported distal regulatory element (not the gene's own promoter) "
         "reported to regulate a named gene's expression for this specific identity. Verify with "
-        "`peak_to_gene_links`: requires `any_significant_distal_link=true` for that gene."
+        "`peak_to_gene_links`: requires `any_significant_distal_link=true` for that gene. On a "
+        "pooled multi-cell-line dataset, ALWAYS pass `cell_line` -- never leave this pooled."
     ),
     "regulon_target": (
         "a specific, literature-reported TF-target-gene pair (NOT the TF's own motif) for this "
         "specific identity. Verify with `regulon_inference(tf_gene=TF, target_gene=TARGET)` -- "
         "ALWAYS pass `target_gene` so your specific candidate is guaranteed to appear in the "
-        "(capped) `targets` list -- and require `significant=true` for it."
+        "(capped) `targets` list -- and require `significant=true` for it. On a pooled "
+        "multi-cell-line dataset, ALSO ALWAYS pass `cell_line` -- never leave this pooled."
     ),
 }
 
 
-def _fallback_question(categories_needed: dict[str, int], identity_hint: str | None) -> str:
+def _fallback_question(categories_needed: dict[str, int], identity_hint: str | None, all_identities: list[str] | None = None) -> str:
     """Builds a CHECKLIST_QUESTION-equivalent scoped to ONLY the categories
     that still need filling after the cheap shortlist pass -- see
     `generate_checklist`'s docstring. Passing `identity_hint` (already
     resolved for free from this dataset's own metadata) skips re-deriving
     identity from scratch, saving the turns that would otherwise go into
     `check_for_identity_columns`/marker-based inference.
+
+    `all_identities`, if this dataset pools more than one real line, names
+    EVERY line found (not just the most-abundant `identity_hint`) so the
+    agent can test a "general across lineages" claim in more than one of
+    them and report every line where it actually replicates, per
+    CHECKLIST_QUESTION's own cell_line-scoping rule.
     """
     lines = [f'- "{cat}": {_FALLBACK_CATEGORY_DESCRIPTIONS[cat]} Still need {n} more well-grounded item(s) in this category.' for cat, n in categories_needed.items()]
+    other_lines = [name for name in (all_identities or []) if name != identity_hint]
     identity_line = (
         f'This dataset\'s real identity has already been determined from its own metadata: '
         f'"{identity_hint}". Use it directly -- no need to re-derive it.'
+        + (
+            f' This dataset pools MULTIPLE real cell lines; the other(s) present are: '
+            f'{", ".join(other_lines)}. For "peak_to_gene"/"regulon_target" candidates, ALWAYS pass '
+            f'`cell_line` (never leave the correlation pooled across every line -- see the main '
+            f'checklist instructions on why), and if a claim is reported as general across '
+            f'lineages, test it in a couple of these other lines too and record every line where '
+            f'it actually replicates.' if other_lines else ''
+        )
         if identity_hint else
         "First, determine this dataset's real identity from evidence (check_for_identity_columns "
         "FIRST, then marker-based inference if that finds nothing) -- never told directly."
@@ -247,18 +296,20 @@ def generate_checklist(
     shortlist_items: list[ChecklistItem] = []
     remaining_needed: dict[str, int] = {c: 3 for c in categories}
     identity_hint = None
+    all_identities: list[str] = []
     if use_shortlist:
         identities = resolve_cheap_identity(mdata)
         if identities:
             identity_hint = identities[0]
+            all_identities = identities
             for category in categories:
-                found = shortlist_checklist_items_for_category(mdata, identity_hint, category, needed=3, model=shortlist_model)
+                found = shortlist_checklist_items_for_category(mdata, all_identities, category, needed=3, model=shortlist_model)
                 shortlist_items.extend(found)
                 remaining_needed[category] = max(0, 3 - len(found))
 
     categories_needing_fallback = {c: n for c, n in remaining_needed.items() if n > 0}
     if categories_needing_fallback:
-        question = _fallback_question(categories_needing_fallback, identity_hint)
+        question = _fallback_question(categories_needing_fallback, identity_hint, all_identities)
         result = run_agent(
             question, model=model, max_turns=max_turns, mdata=mdata, qc_summary=qc_summary,
             tools=CHECKLIST_TOOLS, dataset_context=dataset_context if dataset_context is not None else OWN_DATA_CONTEXT,

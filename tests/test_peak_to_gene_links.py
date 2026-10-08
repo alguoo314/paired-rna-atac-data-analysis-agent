@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from anndata import AnnData
 from scipy.stats import spearmanr
 
 from multiome_agent.core.peak_to_gene_links import (
     _correlate_candidate_peaks,
     _find_overlapping_gene_windows,
     _select_distal_candidate_peaks,
+    peak_to_gene_links as core_peak_to_gene_links,
 )
 from multiome_agent.menu.peak_to_gene_links import peak_to_gene_links as menu_peak_to_gene_links
 
@@ -248,3 +250,64 @@ class _FakeRna:
 class _FakeMData:
     def __init__(self):
         self.mod = {"rna": _FakeRna()}
+
+
+def _build_cell_line_confound_mdata():
+    """2 cell lines (A, B), 10 cells each: GENE1 and a distal peak are both
+    simple step functions by line (high in A, low in B) with mutually
+    UNCORRELATED within-line jitter -- pooled they look linked (rho=0.714,
+    the same numbers verified directly via scipy for the equivalent
+    regulon-inference fixture), but within EITHER line alone the
+    correlation vanishes (rho=-0.152, n.s.) -- a pure between-line confound,
+    not a real distal link.
+    """
+    rising = np.arange(10, dtype=float)
+    noise = np.array([5, 1, 9, 2, 8, 3, 7, 4, 6, 0], dtype=float)
+    gene1_expr = np.concatenate([rising + 10, rising])  # line A: 10-19, line B: 0-9
+    peak_acc = np.concatenate([noise + 10, noise])  # same between-line step, uncorrelated within-line jitter
+
+    rna = AnnData(X=gene1_expr.reshape(-1, 1), var=pd.DataFrame(index=["GENE1"]))
+    rna.obs["cell_line_name"] = ["A"] * 10 + ["B"] * 10
+
+    atac_var = pd.DataFrame({"chrom": ["chr1"], "start": [100000], "end": [100100]}, index=["distal_peak"])
+    atac = AnnData(X=peak_acc.reshape(-1, 1), var=atac_var)
+    atac.layers["counts"] = peak_acc.reshape(-1, 1)
+
+    class _FakeMuData:
+        def __init__(self, rna, atac):
+            self.mod = {"rna": rna, "atac": atac}
+
+    return _FakeMuData(rna, atac)
+
+
+def _gene1_coords():
+    return pd.DataFrame({
+        "chrom": ["chr1"], "gene_name": ["GENE1"], "strand": ["+"], "start": [10000], "end": [11000],
+    })
+
+
+def test_peak_to_gene_links_pooled_finds_a_spurious_between_line_confound(monkeypatch):
+    monkeypatch.setattr("multiome_agent.core.peak_to_gene_links.load_protein_coding_gene_coords", _gene1_coords)
+    mdata = _build_cell_line_confound_mdata()
+
+    result = core_peak_to_gene_links(mdata, "GENE1", window_bp=500_000)
+
+    assert result["cell_line"] is None
+    assert result["n_cells"] == 20
+    assert result["any_significant_distal_link"] is True  # the spurious pooled "signal"
+
+
+def test_peak_to_gene_links_cell_line_scoping_excludes_the_confound(monkeypatch):
+    monkeypatch.setattr("multiome_agent.core.peak_to_gene_links.load_protein_coding_gene_coords", _gene1_coords)
+    mdata = _build_cell_line_confound_mdata()
+
+    for line in ("A", "B"):
+        result = core_peak_to_gene_links(mdata, "GENE1", window_bp=500_000, cell_line=line)
+        assert result["cell_line"] == line
+        assert result["n_cells"] == 10  # honest small-n reporting
+        assert result["any_significant_distal_link"] is False  # correctly excluded once scoped
+
+
+def test_peak_to_gene_links_cell_line_no_such_column_returns_error():
+    result = menu_peak_to_gene_links(_FakeMData(), "GENE1", cell_line="A")
+    assert "error" in result

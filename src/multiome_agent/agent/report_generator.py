@@ -196,7 +196,8 @@ def _render_section3(items: list[ChecklistItem], identity_answer: str) -> str:
             lines.append("*(no grounded, data-present candidate found this run)*\n\n")
             continue
         for it in cat_items:
-            lines.append(f"- **{it.gene_or_motif}**: {it.claim} (PMID {it.pmid}, *{it.journal}*, {it.year})\n")
+            cell_line_note = f" (confirmed in: {', '.join(it.cell_lines)})" if it.cell_lines else ""
+            lines.append(f"- **{it.gene_or_motif}**: {it.claim} (PMID {it.pmid}, *{it.journal}*, {it.year}){cell_line_note}\n")
         lines.append("\n")
 
     lines.append("## Rejected by data\n\n")
@@ -264,7 +265,8 @@ def _render_judged_finding(j: JudgedFinding) -> str:
     # paid for). Use .get() throughout so a partially-filled verdict
     # still renders something honest instead of crashing.
     verdict_str = v.get("verdict", "NO VERDICT RECORDED") if v else "NO VERDICT RECORDED"
-    out = f"### Finding (confidence: {j.confidence})\n\n{j.finding}\n\n**Evidence:** {j.evidence}\n\n"
+    cell_line_note = f" *(tested in: {', '.join(j.cell_lines)})*" if j.cell_lines else ""
+    out = f"### Finding (confidence: {j.confidence}){cell_line_note}\n\n{j.finding}\n\n**Evidence:** {j.evidence}\n\n"
     out += f"**Judger verdict: {verdict_str}**\n\n"
     if v:
         out += (

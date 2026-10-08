@@ -17,7 +17,7 @@ hallucinate a spurious cross-modal finding.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from multiome_agent.agent.loop import TOOLS, AgentRunResult, run_agent
 from multiome_agent.agent.prompts import OWN_DATA_CONTEXT
@@ -55,6 +55,17 @@ RECORD_NOVEL_FINDING_TOOL = {
                     "without itself claiming novel positive biology (e.g. a limitation in how a "
                     "tool matches clusters) -- these are NOT adversarially judged, since there's "
                     "no positive claim to stress-test for hallucination."
+                ),
+            },
+            "cell_lines": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "For a peak_to_gene_links/regulon_inference-based finding on a pooled "
+                    "multi-cell-line dataset ONLY: the real cell-line name(s) you passed as "
+                    "`cell_line` where the result was actually significant. Required on such a "
+                    "dataset -- a pooled (unscoped) correlation can be entirely a between-line "
+                    "confound, not a real relationship. Omit for a single-identity dataset (e.g. PBMC)."
                 ),
             },
         },
@@ -122,9 +133,16 @@ attempts (across regulon_inference/peak_to_gene_links) all fail to survive their
 self-check may you fall back to a `tf_motif_correlation`-based (TF-vs-own-motif) candidate for your \
 remaining attempts. For EACH \
 candidate, before deciding whether to record it: (1) gather the real tool evidence for it (actual \
-numbers, not guessed), then (2) run at least one `search_pubmed` call -- and `fetch_pubmed_abstracts` \
-on any promising hit -- to check whether this SAME specific pattern is already reported. If your \
-own literature check already shows it's well-established, SELF-REJECT that candidate silently: do \
+numbers, not guessed), then (2) for a `regulon_inference`/`peak_to_gene_links`-based candidate \
+SPECIFICALLY, check `tf_detection_rate` and the candidate's own `target_detection_rate` (or the \
+gene's own detection within the scoped cell line for peak_to_gene) BEFORE trusting a significant \
+rho/q -- a gene detected in only a handful of cells (under 5-10%) cannot support a meaningful \
+graded correlation no matter how significant it looks, and SELF-REJECT silently if so; this is a \
+DIFFERENT, more decisive check than cluster-marker status, which only reflects differential \
+expression relative to OTHER clusters, not absolute detection within the named line, (3) run at \
+least one `search_pubmed` call -- and `fetch_pubmed_abstracts` on any promising hit -- to check \
+whether this SAME specific pattern is already reported. If your own literature check already shows \
+it's well-established, SELF-REJECT that candidate silently: do \
 NOT call `record_novel_finding` for it, just move on and try a different candidate. Only call \
 `record_novel_finding` for a candidate that survives its own literature check, with an honest \
 confidence level (high/medium/low). Stop once you've recorded 3 findings that survived this way, \
@@ -136,7 +154,15 @@ fill the quota.
 If this dataset pools multiple distinct cell lines/lineages, don't concentrate all your candidates \
 on the same single line -- try to span them across different lines chosen at random (one about \
 line A, another about line B, another about line C), each still as specific and well-evidenced as \
-if you'd focused on one line the whole time.
+if you'd focused on one line the whole time. This also means: for every `regulon_inference`/ \
+`peak_to_gene_links` call, ALWAYS pass `cell_line` set to one specific real line rather than \
+leaving the correlation pooled across every line -- a pooled correlation can be ENTIRELY a \
+between-line confound (the TF/peak and the gene are each simply markers of the same line's \
+cluster, with no real within-line relationship at all), and this project's own adversarial Judger \
+has already caught exactly that failure mode on an unscoped finding. Record `cell_lines` with \
+every line the finding actually replicated in -- if you suspect a relationship might be general \
+across lineages, test it in a couple of the dataset's other real lines too before recording it, \
+and list every line it held up in, not just the first one tried.
 
 {classify_note}"""
 
@@ -156,7 +182,16 @@ face value):
 1. Artifact check: look for alternative, boring explanations using the data-analysis tools \
 available to you -- e.g. a small sample size in the relevant cluster, a correlation plausibly \
 driven by a confound, or an effect that doesn't independently replicate when checked a different \
-way (e.g. via cross_modal_marker_check).
+way (e.g. via cross_modal_marker_check). For a `regulon_inference`/`peak_to_gene_links`-based \
+finding SPECIFICALLY, you MUST check `tf_detection_rate` and the target's own \
+`target_detection_rate` (re-run the tool call if the original evidence didn't already show them) -- \
+a gene detected in only a handful of cells (under 5-10%) cannot support a meaningful graded \
+correlation no matter how significant rho/q look, regardless of what cluster-marker status says. \
+Cluster-marker status ("is this gene a marker of this line's cluster") is NOT a substitute for \
+this check and is NOT decisive on its own: it only reflects DIFFERENTIAL expression relative to \
+OTHER clusters, and says nothing about absolute detection within the named line's own cells -- a \
+real past mistake was treating "not a marker" as sufficient grounds for likely_artifact=True when \
+the actually-decisive number (detection rate) hadn't been checked at all.
 2. Novelty check: use search_pubmed then fetch_pubmed_abstracts (actually read the abstract, \
 don't just check titles) to look for existing literature that already reports this same \
 relationship.
@@ -173,6 +208,7 @@ class JudgedFinding:
     verdict: dict | None
     judge_cost_usd: float
     finding_type: str = "positive_relationship"
+    cell_lines: list[str] = field(default_factory=list)
 
 
 def propose_novel_findings(
@@ -242,7 +278,7 @@ def judge_novel_findings(
             logger.info("Judged finding %r -> struck_down (cheap already-known prefilter, no Judger call spent)", f["finding"][:60])
             judged.append(JudgedFinding(
                 finding=f["finding"], evidence=f["evidence"], confidence=f["confidence"],
-                verdict=verdict, judge_cost_usd=0.0, finding_type=f.get("finding_type", "positive_relationship"),
+                verdict=verdict, judge_cost_usd=0.0, finding_type=f.get("finding_type", "positive_relationship"), cell_lines=f.get("cell_lines", []),
             ))
             continue
 
@@ -266,7 +302,7 @@ def judge_novel_findings(
         judged.append(JudgedFinding(
             finding=f["finding"], evidence=f["evidence"], confidence=f["confidence"],
             verdict=verdict, judge_cost_usd=result.estimated_cost_usd,
-            finding_type=f.get("finding_type", "positive_relationship"),
+            finding_type=f.get("finding_type", "positive_relationship"), cell_lines=f.get("cell_lines", []),
         ))
         logger.info("Judged finding %r -> %s", f["finding"][:60], verdict.get("verdict") if verdict else "NO VERDICT")
     return judged

@@ -198,7 +198,7 @@ def _correlate_candidate_peaks(
 def peak_to_gene_links(
     mdata: MuData, gene: str, window_bp: int = DEFAULT_WINDOW_BP,
     proximal_upstream_bp: int = DEFAULT_PROXIMAL_UPSTREAM_BP, top_n: int = 10, max_padj: float = 0.05,
-    min_abs_rho: float = DEFAULT_MIN_ABS_RHO,
+    min_abs_rho: float = DEFAULT_MIN_ABS_RHO, cell_line: str | None = None,
 ) -> dict:
     """For `gene`, Spearman-correlate each DISTAL candidate peak's per-cell
     accessibility against the gene's own per-cell RNA expression, BH-correct
@@ -210,6 +210,22 @@ def peak_to_gene_links(
     A link counts as "significant" only if it clears BOTH `max_padj` (BH
     q-value) AND `min_abs_rho` -- q-value alone isn't a safe bar at real
     single-cell sample sizes (see `_correlate_candidate_peaks`'s docstring).
+
+    `cell_line`, if given, restricts BOTH the correlation AND the
+    zero-variance check to only that cell line's own cells (matched via
+    `rna.obs["cell_line_name"]`) -- a peak invariant WITHIN one line but
+    variable pooled across several must correctly read as zero-variance
+    there, not inherit variance that only exists between lines. Default
+    `None` means pooled across every cell in `mdata`, exactly as before
+    this parameter existed -- the right default for a dataset with no
+    cell-line concept at all (e.g. the public PBMC data), and the WRONG
+    default for a pooled multi-cell-line dataset: a real case caught by
+    this project's own adversarial Judger found a genome-wide pooled
+    correlation that was actually just two genes both marking the same
+    cell line's cluster, not a real within-line relationship (see
+    PROGRESS_phase2.md). `n_cells` in the result always reports the real
+    cell count actually correlated over, honestly, however small (e.g. a
+    164-cell line) -- never silently skipped for being underpowered.
 
     RNA side uses whatever state `rna.X` is currently in (same caveat as
     `motif_deviations.tf_expression_motif_correlation`: call this after
@@ -225,6 +241,17 @@ def peak_to_gene_links(
         return {"error": f"Gene {gene!r} not found in this dataset's RNA var_names."}
     atac = mdata.mod["atac"]
 
+    cell_mask = None
+    if cell_line is not None:
+        if "cell_line_name" not in rna.obs.columns:
+            return {"error": "This dataset has no 'cell_line_name' column -- cell_line scoping isn't applicable here."}
+        cell_mask = (rna.obs["cell_line_name"] == cell_line).to_numpy()
+        n_cells = int(cell_mask.sum())
+        if n_cells == 0:
+            return {"error": f"No cells found with cell_line_name == {cell_line!r}."}
+    else:
+        n_cells = rna.n_obs
+
     gene_coords = load_protein_coding_gene_coords()
     gene_row = gene_coords[gene_coords["gene_name"] == gene]
     if gene_row.empty:
@@ -239,8 +266,8 @@ def peak_to_gene_links(
     if candidates.empty:
         logger.info("peak_to_gene_links: no distal candidate peaks within %d bp of %s", window_bp, gene)
         return {
-            "gene": gene, "window_bp": window_bp, "n_candidate_distal_peaks": 0,
-            "n_skipped_degenerate_peaks": 0, "links": [], "best_link": None,
+            "gene": gene, "cell_line": cell_line, "n_cells": n_cells, "window_bp": window_bp,
+            "n_candidate_distal_peaks": 0, "n_skipped_degenerate_peaks": 0, "links": [], "best_link": None,
             "any_significant_distal_link": False,
         }
 
@@ -254,5 +281,11 @@ def peak_to_gene_links(
     expr = rna[:, gene].X
     expr = np.asarray(expr.todense()).ravel() if hasattr(expr, "todense") else np.asarray(expr).ravel()
     atac_counts = atac.layers["counts"] if "counts" in atac.layers else atac.X
+    if cell_mask is not None:
+        expr = expr[cell_mask]
+        atac_counts = atac_counts[cell_mask]
 
-    return _correlate_candidate_peaks(candidates, atac_counts, expr, gene, window_bp, top_n, max_padj, min_abs_rho)
+    result = _correlate_candidate_peaks(candidates, atac_counts, expr, gene, window_bp, top_n, max_padj, min_abs_rho)
+    result["cell_line"] = cell_line
+    result["n_cells"] = n_cells
+    return result

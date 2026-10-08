@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sp
 from anndata import AnnData
 
@@ -225,6 +226,30 @@ def test_infer_regulon_targets_promoter_and_distal_evidence_both_qualify_exclude
     assert result["n_candidate_targets"] == 2
 
 
+def test_infer_regulon_targets_reports_detection_rate_not_just_marker_status(monkeypatch):
+    # Real bug this guards against: a struck-down novelty finding (MYCN->MNX1
+    # in SJSA1, see PROGRESS_phase2.md) was originally judged an artifact
+    # using cluster-marker status alone ("not a marker of this line's
+    # cluster"), when the actually-decisive number -- detection rate within
+    # the scoped cell set -- had never been checked. `rising` is 0..29, so
+    # exactly 1/30 cells (value 0.0) have zero expression: detection rate
+    # must be 29/30 for the TF and for every qualifying target, computed
+    # from the SAME (here unscoped) expression arrays already used for the
+    # correlation -- not hardcoded or guessed.
+    monkeypatch.setattr(
+        "multiome_agent.core.regulon_inference.load_protein_coding_gene_coords", _fake_gene_coords,
+    )
+    mdata = _build_synthetic_regulon_mdata()
+
+    result = infer_regulon_targets(mdata, "TF1", window_bp=20000, proximal_upstream_bp=2000)
+
+    assert "error" not in result
+    assert result["tf_detection_rate"] == pytest.approx(29 / 30)
+    by_gene = {t["gene"]: t for t in result["targets"]}
+    assert by_gene["TARGETA"]["target_detection_rate"] == pytest.approx(29 / 30)
+    assert by_gene["TARGETB"]["target_detection_rate"] == pytest.approx(29 / 30)
+
+
 def test_infer_regulon_targets_tf_not_in_rna_returns_error():
     mdata = _build_synthetic_regulon_mdata()
     result = infer_regulon_targets(mdata, "NOT_A_REAL_TF_XYZ")
@@ -249,4 +274,97 @@ def test_infer_regulon_targets_no_matching_motif_returns_error(monkeypatch):
 
 def test_menu_wrapper_unknown_tf_returns_error_not_exception():
     result = menu_regulon_inference(mdata=_build_synthetic_regulon_mdata(), tf_gene="NOT_A_REAL_TF_XYZ")
+    assert "error" in result
+
+
+def _build_cell_line_confound_mdata():
+    """2 cell lines (A, B), 10 cells each, demonstrating the EXACT failure mode
+    `cell_line` scoping exists to fix: TF1 and CONFOUND are both simple step
+    functions by line (high in A, low in B) with mutually UNCORRELATED
+    within-line jitter -- so pooled across both lines they look strongly
+    correlated (rho=0.714, verified directly via scipy before writing this
+    fixture), but within EITHER line alone that correlation vanishes
+    (rho=-0.152, n.s.) -- a pure between-line confound, not a real
+    relationship. REAL_TARGET, by contrast, tracks TF1's exact rank order
+    WITHIN each line too (rho=1.0 both pooled and within either line) -- a
+    genuinely real relationship that scoping must NOT destroy.
+    """
+    rising = np.arange(10, dtype=float)
+    noise = np.array([5, 1, 9, 2, 8, 3, 7, 4, 6, 0], dtype=float)
+    tf1 = np.concatenate([rising + 10, rising])  # line A: 10-19, line B: 0-9
+    confound = np.concatenate([noise + 10, noise])  # same between-line step, uncorrelated within-line jitter
+    real_target = np.concatenate([rising + 10, rising])  # tracks TF1 exactly, pooled AND within each line
+
+    genes = ["TF1", "CONFOUND", "REAL_TARGET"]
+    rna_X = np.column_stack([tf1, confound, real_target])
+    rna = AnnData(X=rna_X, var=pd.DataFrame(index=genes))
+    rna.obs["cell_line_name"] = ["A"] * 10 + ["B"] * 10
+
+    peak_names = ["peak_confound_promoter", "peak_real_promoter"]
+    atac_var = pd.DataFrame(
+        {"chrom": ["chr1", "chr1"], "start": [1000, 50000], "end": [1100, 50100]}, index=peak_names,
+    )
+    atac_X = np.ones((20, 2), dtype=float)  # accessibility irrelevant here -- promoter evidence needs no correlation
+    atac = AnnData(X=atac_X, var=atac_var)
+    atac.layers["counts"] = atac_X
+    atac.varm["motif_match"] = sp.csr_matrix(np.ones((2, 1), dtype=np.uint8))
+    atac.uns["motif_match_names"] = ["MA0001.1.TF1"]
+
+    class _FakeMuData:
+        def __init__(self, rna, atac):
+            self.mod = {"rna": rna, "atac": atac}
+
+    return _FakeMuData(rna, atac)
+
+
+def _confound_gene_coords():
+    return pd.DataFrame({
+        "chrom": ["chr1"] * 3,
+        "gene_name": ["TF1", "CONFOUND", "REAL_TARGET"],
+        "strand": ["+"] * 3,
+        # CONFOUND's promoter-extended window ([1050-2000, 2050] -> clipped [0,2050])
+        # contains peak_confound_promoter (1000-1100); REAL_TARGET's window
+        # ([50000-2000, 51000] = [48000,51000]) contains peak_real_promoter (50000-50100).
+        "start": [500000, 1050, 50000],
+        "end": [501000, 2050, 51000],
+    })
+
+
+def test_infer_regulon_targets_pooled_finds_a_spurious_between_line_confound(monkeypatch):
+    # Document the EXISTING (pre-fix) failure mode first: pooled across both
+    # lines, CONFOUND looks just as "real" as REAL_TARGET.
+    monkeypatch.setattr("multiome_agent.core.regulon_inference.load_protein_coding_gene_coords", _confound_gene_coords)
+    mdata = _build_cell_line_confound_mdata()
+
+    result = infer_regulon_targets(mdata, "TF1", window_bp=20000, proximal_upstream_bp=2000)
+
+    assert result["cell_line"] is None
+    assert result["n_cells"] == 20
+    by_gene = {t["gene"]: t for t in result["targets"]}
+    assert by_gene["CONFOUND"]["significant"] is True  # the spurious pooled "signal"
+    assert by_gene["REAL_TARGET"]["significant"] is True
+
+
+def test_infer_regulon_targets_cell_line_scoping_excludes_the_confound(monkeypatch):
+    monkeypatch.setattr("multiome_agent.core.regulon_inference.load_protein_coding_gene_coords", _confound_gene_coords)
+    mdata = _build_cell_line_confound_mdata()
+
+    for line in ("A", "B"):
+        result = infer_regulon_targets(mdata, "TF1", window_bp=20000, proximal_upstream_bp=2000, cell_line=line)
+        assert result["cell_line"] == line
+        assert result["n_cells"] == 10  # honest small-n reporting, not silently inflated or skipped
+        by_gene = {t["gene"]: t for t in result["targets"]}
+        assert by_gene["CONFOUND"]["significant"] is False  # correctly excluded once scoped
+        assert by_gene["REAL_TARGET"]["significant"] is True  # the real relationship survives scoping
+
+
+def test_infer_regulon_targets_cell_line_no_such_column_returns_error():
+    mdata = _build_synthetic_regulon_mdata()  # this fixture has no cell_line_name column at all
+    result = infer_regulon_targets(mdata, "TF1", cell_line="A")
+    assert "error" in result
+
+
+def test_infer_regulon_targets_cell_line_no_matching_cells_returns_error():
+    mdata = _build_cell_line_confound_mdata()
+    result = infer_regulon_targets(mdata, "TF1", cell_line="NOT_A_REAL_LINE")
     assert "error" in result

@@ -14,15 +14,20 @@ from multiome_agent.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-def peak_to_gene_links(mdata, gene: str) -> dict:
+def peak_to_gene_links(mdata, gene: str, cell_line: str | None = None) -> dict:
     """Test whether any DISTAL peak's accessibility (i.e. NOT already
     captured by `gene`'s own gene-activity score) tracks `gene`'s own RNA
     expression across cells. Returns an error dict (not a raised exception)
     if `gene` isn't in the RNA data or has no protein-coding GENCODE
     coordinates, so the agent loop can report it back to the model as a
     tool result instead of crashing.
+
+    `cell_line`, if given, restricts the correlation to only that cell
+    line's own cells (see `core.peak_to_gene_links.peak_to_gene_links`'s
+    docstring for why pooling across a multi-cell-line dataset is the
+    wrong default).
     """
-    result = _peak_to_gene_links(mdata, gene)
+    result = _peak_to_gene_links(mdata, gene, cell_line=cell_line)
     if "error" in result:
         logger.info("peak_to_gene_links: %s", result["error"])
     else:

@@ -109,7 +109,7 @@ def test_verify_candidate_in_data_dispatches_rna_marker(monkeypatch):
 def test_verify_candidate_in_data_dispatches_regulon_target(monkeypatch):
     monkeypatch.setattr(
         "multiome_agent.agent.shortlist.infer_regulon_targets",
-        lambda mdata, tf, target_gene=None: {"targets": [{"gene": "CD14", "significant": True}, {"gene": "LYN", "significant": False}]},
+        lambda mdata, tf, target_gene=None, cell_line=None: {"targets": [{"gene": "CD14", "significant": True}, {"gene": "LYN", "significant": False}]},
     )
     assert verify_candidate_in_data(object(), "regulon_target", "SPI1->CD14") is True
     assert verify_candidate_in_data(object(), "regulon_target", "SPI1->LYN") is False
@@ -139,7 +139,7 @@ def test_shortlist_checklist_items_for_category_full_pipeline(monkeypatch):
     )
     monkeypatch.setattr(
         "multiome_agent.agent.shortlist.verify_candidate_in_data",
-        lambda mdata, category, primary: primary != "FAILS_DATA",
+        lambda mdata, category, primary, cell_line=None: primary != "FAILS_DATA",
     )
     monkeypatch.setattr(
         "multiome_agent.agent.shortlist.search_pubmed",
@@ -154,7 +154,7 @@ def test_shortlist_checklist_items_for_category_full_pipeline(monkeypatch):
         lambda claim, abstract, model: claim != "fails judge claim",
     )
 
-    items = shortlist_checklist_items_for_category(object(), "T-47D", "rna_marker", needed=3)
+    items = shortlist_checklist_items_for_category(object(), ["T-47D"], "rna_marker", needed=3)
 
     assert len(items) == 1
     assert items[0].gene_or_motif == "GOOD"
@@ -167,7 +167,7 @@ def test_shortlist_checklist_items_for_category_stops_once_needed_reached(monkey
         "multiome_agent.agent.shortlist.generate_shortlist_candidates",
         lambda identity, category, n, model: [{"primary": f"G{i}", "claim": f"claim {i}"} for i in range(5)],
     )
-    monkeypatch.setattr("multiome_agent.agent.shortlist.verify_candidate_in_data", lambda *a: True)
+    monkeypatch.setattr("multiome_agent.agent.shortlist.verify_candidate_in_data", lambda *a, **k: True)
     monkeypatch.setattr("multiome_agent.agent.shortlist.search_pubmed", lambda claim: [{"pmid": "1", "title": "t"}])
     monkeypatch.setattr(
         "multiome_agent.agent.shortlist.fetch_pubmed_abstracts",
@@ -175,8 +175,51 @@ def test_shortlist_checklist_items_for_category_stops_once_needed_reached(monkey
     )
     monkeypatch.setattr("multiome_agent.agent.shortlist.judge_abstract_supports_claim", lambda *a, **k: True)
 
-    items = shortlist_checklist_items_for_category(object(), "T-47D", "rna_marker", needed=2)
+    items = shortlist_checklist_items_for_category(object(), ["T-47D"], "rna_marker", needed=2)
     assert len(items) == 2
+
+
+def test_shortlist_checklist_items_for_category_rotates_lines_and_records_free_replication(monkeypatch):
+    # Each line's candidate-generation call is tracked so we can assert LINE_C's
+    # is never spent once `needed` is already reached by LINE_A + LINE_B's claims
+    # -- the rotation stops early, it doesn't exhaustively poll every line.
+    generation_calls = []
+
+    def _fake_generate(identity, category, n, model):
+        generation_calls.append(identity)
+        return {
+            "LINE_A": [{"primary": "GENE1", "claim": "claim1"}],
+            "LINE_B": [{"primary": "GENE2", "claim": "claim2"}],
+            "LINE_C": [{"primary": "GENE3", "claim": "claim3"}],
+        }[identity]
+
+    monkeypatch.setattr("multiome_agent.agent.shortlist.generate_shortlist_candidates", _fake_generate)
+
+    def _fake_verify(mdata, category, primary, cell_line=None):
+        # GENE1 (framed around LINE_A) also replicates for free in LINE_C but not
+        # LINE_B; GENE2 (framed around LINE_B) replicates nowhere else.
+        if primary == "GENE1":
+            return cell_line in ("LINE_A", "LINE_C")
+        if primary == "GENE2":
+            return cell_line == "LINE_B"
+        return False
+
+    monkeypatch.setattr("multiome_agent.agent.shortlist.verify_candidate_in_data", _fake_verify)
+    monkeypatch.setattr("multiome_agent.agent.shortlist.search_pubmed", lambda claim: [{"pmid": "1", "title": "t"}])
+    monkeypatch.setattr(
+        "multiome_agent.agent.shortlist.fetch_pubmed_abstracts",
+        lambda pmids: {"1": {"abstract": "x", "journal": "J", "year": "2020"}},
+    )
+    monkeypatch.setattr("multiome_agent.agent.shortlist.judge_abstract_supports_claim", lambda *a, **k: True)
+
+    items = shortlist_checklist_items_for_category(
+        object(), ["LINE_A", "LINE_B", "LINE_C"], "peak_to_gene", needed=2,
+    )
+
+    assert [i.gene_or_motif for i in items] == ["GENE1", "GENE2"]
+    assert items[0].cell_lines == ["LINE_A", "LINE_C"]  # origin line first, then free-checked replication
+    assert items[1].cell_lines == ["LINE_B"]
+    assert "LINE_C" not in generation_calls  # needed=2 reached before LINE_C's own candidates were ever generated
 
 
 def test_cheap_already_known_check_resolves_when_abstract_supports(monkeypatch):

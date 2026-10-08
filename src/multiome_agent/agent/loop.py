@@ -75,12 +75,28 @@ TOOLS = [
             "naming it as a possibility. Returns the top candidate linked peaks (distance, "
             "Spearman rho, BH-corrected q-value) and whether any cleared BOTH a q<0.05 AND an "
             "|rho|>=0.2 bar (q-value alone is too permissive at real cell counts), or an "
-            "error if the gene isn't in the data or has no GENCODE coordinates."
+            "error if the gene isn't in the data or has no GENCODE coordinates. If this dataset "
+            "pools multiple cell lines (check_for_identity_columns found a real cell_line_name "
+            "field), ALWAYS pass `cell_line` set to one specific real line's name rather than "
+            "leaving this pooled across every line -- a pooled correlation can be entirely a "
+            "between-line confound (two genes that are each simply markers of the same line's "
+            "cluster, with no real within-line relationship at all), not a real distal link. If a "
+            "claim is reported as general across several lineages, call this once per relevant "
+            "line present in the data and report every line where it actually replicates."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "gene": {"type": "string", "description": "Gene symbol, e.g. CD14"},
+                "cell_line": {
+                    "type": "string",
+                    "description": (
+                        "Restrict the correlation to only this cell line's own cells (its real "
+                        "name, from check_for_identity_columns) -- required for a defensible claim "
+                        "on any dataset that pools multiple cell lines. Omit only for a dataset "
+                        "with no cell-line concept at all (e.g. a single-donor PBMC sample)."
+                    ),
+                },
             },
             "required": ["gene"],
         },
@@ -101,7 +117,15 @@ TOOLS = [
             "gene in mind (e.g. verifying a literature-reported TF-target pair), pass "
             "`target_gene` so its real entry is guaranteed to appear even if it wouldn't "
             "otherwise make the cap. Returns an error if the TF isn't in the data, has no matching "
-            "motif, or this dataset's motif-match data isn't available."
+            "motif, or this dataset's motif-match data isn't available. If this dataset pools "
+            "multiple cell lines (check_for_identity_columns found a real cell_line_name field), "
+            "ALWAYS pass `cell_line` set to one specific real line's name rather than leaving this "
+            "pooled across every line -- a pooled TF-target correlation can be entirely a "
+            "between-line confound (the TF and the 'target' are each simply markers of the same "
+            "line's cluster, with no real within-line regulatory relationship at all), not real "
+            "TF-driven regulation. If a claim is reported as general across several lineages, call "
+            "this once per relevant line present in the data and report every line where it "
+            "actually replicates."
         ),
         "input_schema": {
             "type": "object",
@@ -110,6 +134,15 @@ TOOLS = [
                 "target_gene": {
                     "type": "string",
                     "description": "Optional: a specific target gene you want a guaranteed answer for, e.g. CD14",
+                },
+                "cell_line": {
+                    "type": "string",
+                    "description": (
+                        "Restrict the correlation to only this cell line's own cells (its real "
+                        "name, from check_for_identity_columns) -- required for a defensible claim "
+                        "on any dataset that pools multiple cell lines. Omit only for a dataset "
+                        "with no cell-line concept at all (e.g. a single-donor PBMC sample)."
+                    ),
                 },
             },
             "required": ["tf_gene"],
@@ -384,9 +417,12 @@ def _execute_tool(name: str, tool_input: dict, mdata, qc_summary: str | None, co
         if name == "tf_motif_correlation":
             result = tf_motif_correlation(mdata, tool_input["gene"])
         elif name == "peak_to_gene_links":
-            result = peak_to_gene_links(mdata, tool_input["gene"])
+            result = peak_to_gene_links(mdata, tool_input["gene"], cell_line=tool_input.get("cell_line"))
         elif name == "regulon_inference":
-            result = regulon_inference(mdata, tool_input["tf_gene"], target_gene=tool_input.get("target_gene"))
+            result = regulon_inference(
+                mdata, tool_input["tf_gene"], target_gene=tool_input.get("target_gene"),
+                cell_line=tool_input.get("cell_line"),
+            )
         elif name == "search_pubmed":
             result = search_pubmed(tool_input["query"])
         elif name == "fetch_pubmed_abstracts":

@@ -162,6 +162,7 @@ def infer_regulon_targets(
     mdata: MuData, tf_gene: str, window_bp: int = DEFAULT_WINDOW_BP,
     proximal_upstream_bp: int = DEFAULT_PROXIMAL_UPSTREAM_BP, max_padj: float = 0.05,
     min_abs_rho: float = DEFAULT_MIN_ABS_RHO, target_gene: str | None = None, top_n: int = DEFAULT_TARGETS_TOP_N,
+    cell_line: str | None = None,
 ) -> dict:
     """For `tf_gene`, find candidate target genes via real motif + chromatin
     evidence (see module docstring), then Spearman-correlate the TF's own
@@ -188,6 +189,35 @@ def infer_regulon_targets(
     `n_candidate_targets`/`n_significant_targets`/`any_significant_target`
     always reflect the TRUE full counts, never the truncated list's size.
 
+    `cell_line`, if given, restricts the CORRELATION (both the TF-vs-target
+    reported statistic AND the distal peak-accessibility-vs-target-gene
+    evidence test) to only that cell line's own cells -- candidate
+    identification (which peaks carry the TF's motif, which genes they sit
+    near) stays dataset-wide, since that's genome/assay structure, not
+    per-cell expression. Default `None` means pooled across every cell, the
+    WRONG default for a pooled multi-cell-line dataset: this project's own
+    adversarial Judger caught a real pooled "significant" TF-target
+    correlation that was actually just two genes both marking the same
+    cell line's cluster, not a real within-line relationship (see
+    PROGRESS_phase2.md). `n_cells` in the result always reports the real
+    count actually correlated over, honestly, however small.
+
+    `tf_detection_rate` (top-level) and each target's own
+    `target_detection_rate` report the fraction of this (cell_line-scoped)
+    cell set with nonzero expression -- a DIFFERENT and more decisive
+    artifact check than cluster-marker status. "Not a marker of this
+    line's cluster" only means NOT DIFFERENTIALLY expressed relative to
+    OTHER clusters; it says nothing about absolute detection within the
+    named line's own cells. A gene detected in only a handful of cells
+    (e.g. <5-10%) cannot support a meaningful graded correlation no matter
+    how significant the reported rho/q look -- the estimate is then
+    mechanically driven by whichever few cells happen to co-detect both
+    genes. A real struck-down finding (MYCN->MNX1 in SJSA1) was originally
+    rejected on marker-status grounds alone; the real, more decisive reason
+    was MYCN detected in only 1/773 and MNX1 in only 12/773 SJSA1 cells
+    (see PROGRESS_phase2.md). Always check detection rate directly rather
+    than relying on marker status as a proxy for it.
+
     Returns an error dict (not a raised exception) for a missing gene, a
     missing/unresolvable motif, or missing `motif_match` data (compute_motif_deviations
     must have run and persisted it) -- same convention as `peak_to_gene_links`.
@@ -198,6 +228,17 @@ def infer_regulon_targets(
         logger.info("infer_regulon_targets: TF %r not found in RNA data", tf_gene)
         return {"error": f"Gene {tf_gene!r} not found in this dataset's RNA var_names."}
     atac = mdata.mod["atac"]
+
+    cell_mask = None
+    if cell_line is not None:
+        if "cell_line_name" not in rna.obs.columns:
+            return {"error": "This dataset has no 'cell_line_name' column -- cell_line scoping isn't applicable here."}
+        cell_mask = (rna.obs["cell_line_name"] == cell_line).to_numpy()
+        n_cells = int(cell_mask.sum())
+        if n_cells == 0:
+            return {"error": f"No cells found with cell_line_name == {cell_line!r}."}
+    else:
+        n_cells = rna.n_obs
 
     # `atac.uns["motif_match_names"]` round-trips through h5mu write/read as a
     # numpy array, not the plain Python list it was stored as -- `not <array>`
@@ -223,7 +264,8 @@ def infer_regulon_targets(
     # an abundant motif's candidate set. Converting once to CSC (efficient
     # per-column slicing) and indexing the raw matrix directly, bypassing
     # AnnData's `__getitem__` entirely, fixes this at its real source.
-    rna_X_csc = rna.X.tocsc() if hasattr(rna.X, "tocsc") else rna.X
+    rna_X = rna.X[cell_mask] if cell_mask is not None else rna.X
+    rna_X_csc = rna_X.tocsc() if hasattr(rna_X, "tocsc") else rna_X
     rna_col_idx = {g: i for i, g in enumerate(rna.var_names)}
     rna_cache: dict[str, np.ndarray] = {}
 
@@ -237,12 +279,26 @@ def infer_regulon_targets(
     if np.ptp(tf_expr) == 0:
         logger.info("infer_regulon_targets: TF %r has zero expression variance", tf_gene)
         return {"error": f"Gene {tf_gene!r} has zero RNA expression variance in this dataset -- cannot correlate."}
+    # Detection rate (fraction of this (cell_line-scoped) cell set with nonzero
+    # expression) is a DIFFERENT and more decisive check than cluster-marker
+    # status: a gene can fail to be a differential marker of its own line's
+    # cluster for all sorts of reasons, but a gene detected in only a handful
+    # of cells cannot support a meaningful graded correlation no matter how
+    # significant rho/q look -- a real struck-down finding (MYCN->MNX1 in
+    # SJSA1, see PROGRESS_phase2.md) was originally rejected on marker-status
+    # grounds alone; the real, more decisive reason was MYCN detected in only
+    # 1/773 and MNX1 in only 12/773 SJSA1 cells. Reporting this directly in
+    # every result means the agent/Judger sees it without a separate,
+    # easy-to-forget tool call.
+    tf_detection_rate = float(np.mean(tf_expr > 0))
 
     tf_motif_peak_positions = atac.varm["motif_match"][:, motif_idx].nonzero()[0]
     if len(tf_motif_peak_positions) == 0:
         logger.info("infer_regulon_targets: no peaks carry %s's motif %s", tf_gene, motif_name)
         return {
-            "tf": tf_gene, "motif": motif_name, "n_tf_motif_peaks": 0, "distal_search_capped": False,
+            "tf": tf_gene, "motif": motif_name, "cell_line": cell_line, "n_cells": n_cells,
+            "tf_detection_rate": tf_detection_rate,
+            "n_tf_motif_peaks": 0, "distal_search_capped": False,
             "n_tf_motif_peaks_used_for_distal_search": 0, "n_candidate_targets": 0,
             "n_significant_targets": 0, "targets": [], "any_significant_target": False,
         }
@@ -300,8 +356,12 @@ def infer_regulon_targets(
         nearby = nearby[nearby["_in_promoter"].isna()].drop(columns=["_in_promoter"])
     nearby = nearby[nearby["gene_name"].isin(rna.var_names)]
 
-    # Same CSR-column-slicing cost as `rna_X_csc` above, same fix.
+    # Same CSR-column-slicing cost as `rna_X_csc` above, same fix. Row-subset to
+    # `cell_mask` BEFORE converting/caching, same as `rna_X` above, so every
+    # downstream correlation (via `peak_accessibility`) is already scoped.
     atac_counts = atac.layers["counts"] if "counts" in atac.layers else atac.X
+    if cell_mask is not None:
+        atac_counts = atac_counts[cell_mask]
     atac_counts = atac_counts.tocsc() if hasattr(atac_counts, "tocsc") else atac_counts
     peak_acc_cache: dict[int, np.ndarray] = {}
 
@@ -347,14 +407,16 @@ def infer_regulon_targets(
     if not candidate_genes:
         logger.info("infer_regulon_targets: %s -> 0 candidate target genes", tf_gene)
         return {
-            "tf": tf_gene, "motif": motif_name, "n_tf_motif_peaks": len(tf_motif_peak_positions),
+            "tf": tf_gene, "motif": motif_name, "cell_line": cell_line, "n_cells": n_cells,
+            "tf_detection_rate": tf_detection_rate,
+            "n_tf_motif_peaks": len(tf_motif_peak_positions),
             "distal_search_capped": distal_search_capped,
             "n_tf_motif_peaks_used_for_distal_search": len(tf_peaks_for_distal),
             "n_candidate_targets": 0, "n_significant_targets": 0, "targets": [], "any_significant_target": False,
         }
 
     # --- The reported statistic: TF's own RNA vs EACH candidate target gene's own RNA. ---
-    tested_genes, trhos, tpvals = [], [], []
+    tested_genes, trhos, tpvals, tdetect = [], [], [], []
     for g in candidate_genes:
         g_expr = gene_expr(g)
         if np.ptp(g_expr) == 0:
@@ -363,6 +425,7 @@ def infer_regulon_targets(
         tested_genes.append(g)
         trhos.append(float(rho))
         tpvals.append(float(pval))
+        tdetect.append(float(np.mean(g_expr > 0)))
     tqvals = false_discovery_control(tpvals, method="bh") if tpvals else []
 
     targets = [
@@ -371,8 +434,9 @@ def infer_regulon_targets(
             "significant": bool(qval < max_padj and abs(rho) >= min_abs_rho),
             "promoter_motif_evidence": promoter_evidence.get(g, []),
             "distal_peak_evidence": distal_evidence.get(g, []),
+            "target_detection_rate": detect,
         }
-        for g, rho, pval, qval in zip(tested_genes, trhos, tpvals, tqvals)
+        for g, rho, pval, qval, detect in zip(tested_genes, trhos, tpvals, tqvals, tdetect)
     ]
     targets.sort(key=lambda t: abs(t["spearman_rho"]), reverse=True)
     n_significant = sum(1 for t in targets if t["significant"])
@@ -400,7 +464,9 @@ def infer_regulon_targets(
         tf_gene, motif_name, len(targets), n_significant, len(returned),
     )
     return {
-        "tf": tf_gene, "motif": motif_name, "n_tf_motif_peaks": len(tf_motif_peak_positions),
+        "tf": tf_gene, "motif": motif_name, "cell_line": cell_line, "n_cells": n_cells,
+        "tf_detection_rate": tf_detection_rate,
+        "n_tf_motif_peaks": len(tf_motif_peak_positions),
         "distal_search_capped": distal_search_capped,
         "n_tf_motif_peaks_used_for_distal_search": len(tf_peaks_for_distal),
         "n_candidate_targets": len(targets), "n_significant_targets": n_significant,
