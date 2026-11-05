@@ -115,9 +115,9 @@ By default it asks one fixed question, chosen to showcase the `regulon_inference
 Ask your own with `QUESTION=`:
 
 ```bash
-make demo QUESTION="does CD3E mark T cells in this dataset?"
-make demo QUESTION="does SPI1 regulate CD14 in this dataset?"
-make demo QUESTION="is there a distal enhancer for CD3E?"   # exercises peak_to_gene_links
+make demo QUESTION="does CD3E mark T cells in this dataset?" #fastest, with no extra downloads needed
+make demo QUESTION="does SPI1 regulate CD14 in this dataset?" #need to fetch a ~45 MB GENCODE annotation the first time it runs. Give it a minute.
+make demo QUESTION="is there a distal enhancer for CD3E?"   # #need to fetch a ~45 MB GENCODE annotation the first time it runs. Give it a minute.
 ```
 
 - **Data:** `demo_cache/agent_demo_core.h5mu` (150 cells, ~85 MB), built by `agent/demo_fixed_core_cache.py`
