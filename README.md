@@ -115,9 +115,9 @@ By default it asks one fixed question, chosen to showcase the `regulon_inference
 Ask your own with `QUESTION=`:
 
 ```bash
-make demo QUESTION="does CD3E mark T cells in this dataset?" #fastest, with no extra downloads needed
-make demo QUESTION="does SPI1 regulate CD14 in this dataset?" #need to fetch a ~45 MB GENCODE annotation the first time it runs. Give it a minute.
-make demo QUESTION="is there a distal enhancer for CD3E?"   # #need to fetch a ~45 MB GENCODE annotation the first time it runs. Give it a minute.
+make demo QUESTION="does CD3E mark T cells in this dataset?"
+make demo QUESTION="does SPI1 regulate CD14 in this dataset?"   # exercises regulon_inference
+make demo QUESTION="is there a distal enhancer for CD3E?"       # exercises peak_to_gene_links
 ```
 
 - **Data:** `demo_cache/agent_demo_core.h5mu` (150 cells, ~86 MB), built by `agent/demo_fixed_core_cache.py` -- also ships a small GENCODE gene-coordinates subset (restricted to this demo's own RNA panel) directly inside the cache, so a `peak_to_gene_links`/`regulon_inference` question answers fast without needing to parse (or download) the full genome annotation at query time
@@ -196,7 +196,7 @@ judged = judge_novel_findings(findings, mdata, qc_summary, model="claude-opus-5"
 
 ## Treatment / condition branch
 
-The pipeline also includes a fully built and tested drug/condition-detection branch, with per-arm QC and condition-specific literature grounding for datasets that have a real treatment axis. It isn't shown in the example reports: the public PBMC data is control-only, and the private dataset's treatment arm involves drug identities that can't be published.
+The pipeline also includes a fully built and tested drug/condition-comparison branch for datasets that have a real treatment axis: per-arm QC, real treated-vs-control differential expression (RNA) and differential accessibility (ATAC) scoped per cell line, a chi-squared batch-confound check the adversarial Judger is required to run independently before trusting any result, a literature check on whether the observed direction matches a published drug effect, and condition-specific literature grounding. It isn't shown in the example reports: the public PBMC data is control-only, and the private dataset's treatment arm involves drug identities that can't be published. It costs nothing and changes nothing in either report when there's no real condition axis to investigate.
 
 ## Build log
 The development history is split into two logs, both written as the work happened (every bug, wrong turn and fix, with evidence):
