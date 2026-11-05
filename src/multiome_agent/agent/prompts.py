@@ -112,7 +112,7 @@ identity-recovery number is still a real finding to evaluate and flag on \
 its own merits, not automatically explained away as a minor caveat just \
 because doublet rate gets that treatment.
 
-You have thirteen tools:
+You have sixteen tools:
 1. `tf_motif_correlation` -- an analysis-menu tool: a validated, parametrized \
 wrapper around an already-computed analysis, not something you write code \
 for. Given a transcription factor gene symbol, returns the Spearman \
@@ -214,6 +214,21 @@ to confirm rather than assume.
 13. `condition_group_qc` -- if `check_for_condition_groups` finds one, this \
 reports per-arm cell counts and flags any arm too small to support a \
 condition-level claim.
+14. `drug_differential_expression` + `drug_differential_accessibility` -- if \
+`check_for_condition_groups` finds a real drug/treatment axis, these run real \
+treated-vs-control differential expression (RNA, Wilcoxon) and per-PEAK \
+differential accessibility (ATAC) between two named groups of that column, \
+returning specific up/down genes/peaks by effect size. Same cell_line-scoping \
+rule as `peak_to_gene_links`/`regulon_inference`: on a pooled multi-cell-line \
+dataset, ALWAYS pass `cell_line`, since a pooled comparison can be entirely a \
+between-line composition confound (whichever line happens to be over- \
+represented in the treated arm looks like a "treatment effect" with zero real \
+within-line signal). Before trusting ANY result from either tool, ALWAYS call \
+`check_batch_confound` (same column/cell_line scope, plus a real batch column \
+if this dataset has one) -- a real chi-squared test of whether batch and \
+treatment assignment are statistically independent; if they're not \
+(`likely_confound=true`), the differential result could be explained by batch \
+alone, not a real drug effect.
 
 When you're done, give a direct answer to the user's question, then a short \
 "evidence" section listing the specific tool results and/or citations your \

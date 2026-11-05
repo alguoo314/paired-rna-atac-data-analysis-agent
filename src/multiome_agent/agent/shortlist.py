@@ -35,7 +35,7 @@ import anthropic
 from multiome_agent.config import get_anthropic_api_key
 from multiome_agent.core.clustering import marker_is_recovered
 from multiome_agent.core.identity_metadata import detect_identity_columns
-from multiome_agent.core.motif_deviations import best_motif_match
+from multiome_agent.core.motif_deviations import best_motif_match, motif_enriched_in_cell_line
 from multiome_agent.core.peak_to_gene_links import peak_to_gene_links as _peak_to_gene_links
 from multiome_agent.core.regulon_inference import infer_regulon_targets
 from multiome_agent.logging_utils import get_logger
@@ -187,19 +187,32 @@ def verify_candidate_in_data(mdata, category: str, primary: str, cell_line: str 
     analysis-menu tools the expensive agent path would call, just invoked
     directly instead of through a model's tool-use turn.
 
-    `cell_line`, for `peak_to_gene`/`regulon_target` only, restricts the
-    correlation to that one line's own cells -- see
-    `core.peak_to_gene_links`/`core.regulon_inference`'s docstrings for why
-    pooling across a multi-cell-line dataset is the wrong default. Ignored
-    for `rna_marker`/`motif`, which aren't pooled-correlation-based checks
-    in the first place.
+    `cell_line`, for `peak_to_gene`/`regulon_target`/`motif`, restricts the
+    check to that one line's own cells -- see
+    `core.peak_to_gene_links`/`core.regulon_inference`/`core.motif_deviations.
+    motif_enriched_in_cell_line`'s docstrings for why pooling across a
+    multi-cell-line dataset is the wrong default. Ignored for `rna_marker`,
+    which isn't a pooled-correlation/group-comparison check in the first
+    place.
+
+    For `motif` specifically, when `cell_line` is given this tests that the
+    motif's chromVAR deviation is actually statistically HIGHER in that
+    line's own cells than in the rest -- not just that a same-named motif
+    exists somewhere in JASPAR's library (the old, much weaker check: a
+    name match there says nothing about whether it's really elevated in
+    THIS dataset at all). Falls back to the old existence-only check only
+    when `cell_line` is None (no concrete identity to test an enrichment
+    against, e.g. a dataset with no cell-line concept).
     """
     try:
         if category == "rna_marker":
             return marker_is_recovered(mdata.mod["rna"], primary.strip().upper())
         if category == "motif":
-            names = mdata.mod["atac"].uns.get("chromvar_motif_names")
-            return bool(names) and best_motif_match(list(names), primary) is not None
+            if cell_line is None:
+                names = mdata.mod["atac"].uns.get("chromvar_motif_names")
+                return bool(names) and best_motif_match(list(names), primary) is not None
+            result = motif_enriched_in_cell_line(mdata, primary, cell_line)
+            return "error" not in result and result["enriched_in_cell_line"]
         if category == "peak_to_gene":
             result = _peak_to_gene_links(mdata, primary, cell_line=cell_line)
             return "error" not in result and result["any_significant_distal_link"]
@@ -266,17 +279,18 @@ def shortlist_checklist_items_for_category(mdata, identities: list[str], categor
             # left to fail honestly via `verify_candidate_in_data`.
             if category == "peak_to_gene" and "->" in primary:
                 primary = primary.rsplit("->", 1)[-1].strip()
-            # Scope peak_to_gene/regulon_target verification to the line that framed
-            # this specific candidate's claim -- pooling across every line in the
-            # dataset would risk reporting a between-line confound as a real
+            # Scope peak_to_gene/regulon_target/motif verification to the line that
+            # framed this specific candidate's claim -- pooling across every line in
+            # the dataset would risk reporting a between-line confound as a real
             # within-line relationship (see core.peak_to_gene_links/
-            # core.regulon_inference's docstrings). Ignored for rna_marker/motif,
-            # which aren't pooled-correlation-based checks.
-            scoped_cell_line = line if category in ("peak_to_gene", "regulon_target") else None
+            # core.regulon_inference/core.motif_deviations.motif_enriched_in_cell_line's
+            # docstrings). Ignored for rna_marker, which isn't a pooled-correlation/
+            # group-comparison check in the first place.
+            scoped_cell_line = line if category in ("peak_to_gene", "regulon_target", "motif") else None
             if not verify_candidate_in_data(mdata, category, primary, cell_line=scoped_cell_line):
                 continue
             replicated_lines = [scoped_cell_line] if scoped_cell_line else []
-            if category in ("peak_to_gene", "regulon_target"):
+            if category in ("peak_to_gene", "regulon_target", "motif"):
                 # Free (no LLM cost) deterministic check of whether this SAME
                 # candidate also replicates in every OTHER real line present --
                 # not required for confirmation, just honestly reported if true.

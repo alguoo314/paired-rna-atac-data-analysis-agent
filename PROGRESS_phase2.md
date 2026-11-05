@@ -746,3 +746,93 @@ description, the menu wrapper's docstring, and both `_novelty_question`/`_judger
 `novelty.py` to require checking detection rate before trusting or letting survive any
 `regulon_inference`/`peak_to_gene_links`-based finding, explicitly flagging that cluster-marker
 status is NOT a substitute for it.
+
+## Step 17: QC-verdict gate, real PubMed relevance sort, a real drug-comparison branch, a real motif check, and GENCODE shipped in the demo cache
+
+Five independent code changes, owner-requested in one batch, none requiring real paid agent
+runs to verify (all covered by mocked/synthetic unit tests, same convention as every prior step).
+
+**QC-verdict gate** (`agent/qc_verdict.py`, new): one scoped agent call runs right after the
+fixed core, before any of the more expensive known-biology/novelty steps -- given the real QC
+summary plus ONLY the marker/cross-modal-validation tools (`list_clusters`,
+`top_cluster_markers`, `top_gene_activity_markers`, `cross_modal_marker_check` -- deliberately
+NOT the full analysis-menu/literature toolset, this gate judges usability, not biology), it must
+end by calling `record_qc_verdict(status, reasons)` with `status` one of `"usable"` /
+`"usable with caveats"` / `"do not use"`. Wired into `report_generator.generate_report` right
+after the fixed core loads; rendered at the very top of section 1, before the data-source line.
+`require_tool_call` (already built for the Judger) makes the one-nudge-then-default-to-caution
+behavior free to reuse. 5 new tests (`tests/test_qc_verdict.py`) plus 2 in
+`test_report_generator.py` for the rendering/wiring.
+
+**PubMed relevance sort** (`tools/pubmed.py`): added `"sort": "relevance"` to ESearch's params --
+without it, "top result" silently meant "newest paper matching the keywords" (ESearch's actual
+default), not "most relevant," a real grounding-quality issue for every literature-RAG step in
+this project. One new mocked-params test confirms the parameter is actually sent.
+
+**Real motif check** (`core/motif_deviations.motif_enriched_in_cell_line`, new; wired into
+`agent/shortlist.verify_candidate_in_data`): the "motif" checklist category's free
+data-verification used to only confirm a same-named motif exists somewhere in JASPAR's library --
+exactly the "existence, not enrichment" gap the owner had just independently rediscovered for
+regulon detection rate in Step 16. Now, when a `cell_line` is in play, it runs a real one-sided
+Mann-Whitney U test (that line's own cells vs. the rest) on the real chromVAR deviation score.
+Grouped by the dataset's own `cell_line_name` ground truth rather than an inferred ATAC cluster --
+more precise, and avoids stacking two sources of error. `shortlist_checklist_items_for_category`'s
+per-line-rotation/free-cross-line-replication logic (Step 16) now covers "motif" alongside
+"peak_to_gene"/"regulon_target". 4 new tests in `test_gene_activity_and_motifs.py`'s lightweight
+synthetic section (not the slow real-chromVAR fixture) plus 2 in `test_shortlist.py`.
+
+**Drug-comparison branch** (`core/drug_comparison.py` + `menu/drug_comparison.py` +
+`agent/drug_comparison.py`, all new): implements the "peak-level differential accessibility
+between two named groups" roadmap item CLAUDE.md had flagged as not-yet-implemented.
+`rna_differential_expression`/`atac_differential_accessibility` run real Wilcoxon
+treated-vs-control tests (RNA genes / ATAC peaks), scoped per real cell line for the SAME
+between-line-confound reason `peak_to_gene_links`/`regulon_inference` are (verified with a
+planted synthetic confound: a pure cell-line marker with zero real condition effect reads as
+significant pooled, purely from arm-composition skew, and the confound disappears when scoped to
+either line alone). `batch_confound_check` is a real chi-squared test of independence between
+batch and treatment assignment -- CLAUDE.md principle 1 (deterministic stats, LLM reasoning)
+means this has to be a real tool the Judger calls and reasons about, not a number it guesses.
+Reuses `agent.novelty`'s propose+judge machinery entirely rather than a parallel pipeline:
+`propose_novel_findings` gained an optional `custom_question` parameter so
+`propose_drug_comparison_findings` can drive the SAME proposal loop with a drug-specific question
+(and the exact same `record_novel_finding` schema/Judger pipeline downstream); `_judger_question`
+was extended to REQUIRE an independent `check_batch_confound` call for this finding type.
+`propose_drug_comparison_findings` short-circuits to a zero-cost, zero-API-call no-op whenever
+`detect_condition_groups` reports control-only -- true for both current datasets, so this is a
+real, tested branch (synthetic-column tests, 10 in `test_drug_comparison.py` + 3 in
+`test_drug_comparison_agent.py`) with ZERO effect on either committed report today, same
+"inert scaffold + test" status as `core/condition_detection.py` itself. Wired into
+`report_generator.generate_report` as an optional 6th section, rendered only when a real
+condition axis is found (verified both ways: control-only produces byte-identical section
+structure to before, a real axis produces the new section -- 3 new tests in
+`test_report_generator.py`). Also added 3 new tools (`drug_differential_expression`,
+`drug_differential_accessibility`, `check_batch_confound`) to `agent/loop.py`'s `TOOLS`, bumping
+the system prompt's tool count and the demo's own "same N-tool toolset" line.
+
+**GENCODE subset shipped in the demo cache**: `load_protein_coding_gene_coords` previously
+re-parsed the full ~35MB GENCODE GFF3 from scratch on EVERY call, with no caching at all --
+fine for a real report run (one dataset, a handful of calls) but real latency on a demo
+regulon/peak-to-gene question, and a real risk of triggering snapatac2's genome-annotation
+download on a machine where it isn't cached yet. Added an optional `mdata` parameter: if
+`mdata.uns["gencode_gene_coords_subset"]` is already present, return it directly, skipping the
+parse entirely. Lossless -- both `peak_to_gene_links` and `regulon_inference` already intersect
+their candidate gene set with `rna.var_names` before returning anything, so restricting the
+coordinate table to the demo's own RNA panel upfront changes zero real results (verified: a real
+`peak_to_gene_links(CD3E)`/`regulon_inference(GATA3)` call against the patched demo cache
+returns identical results to before, confirmed via direct function calls since the project's API
+key is currently invalid -- see below). `agent/demo_fixed_core_cache.py`'s `build_demo_cache` now
+embeds this subset for any future from-scratch rebuild; the ALREADY-committed cache was patched
+in place via a new one-time `scripts/backfill_demo_gencode_subset.py` (same pattern as Step 14's
+motif/counts backfill) -- no 17-20 min rebuild needed, the GENCODE annotation was already
+cached locally (35MB, no network). Demo cache grew 84.8MB -> 86.3MB, still well under GitHub's
+100MB limit. Verified the embedded field round-trips (microsecond lookup, `is` the exact cached
+object) and real tool calls against the patched cache still return correct results. 2 new tests
+(including one exercising the real GENCODE-format parsing logic directly via a tiny synthetic
+GFF3, which had no direct unit test before this).
+
+**Verification note:** the project's `ANTHROPIC_API_KEY` returned 401 (invalid) partway through
+this session, blocking a live `make demo` check and causing 4 pre-existing "real" (name-tagged)
+tests to fail in the full suite run -- confirmed via the error message itself (not assumed) and
+unrelated to any change in this step; same for one `tools/pubmed.py` test failure, confirmed via
+a direct `curl` against NCBI's own endpoint returning the SAME 500 "Cannot connect to SOLR" error
+with zero parameters from this project at all. Full suite otherwise: 265 passed.

@@ -27,6 +27,7 @@ from multiome_agent.core.condition_detection import condition_group_qc, detect_c
 from multiome_agent.core.cross_modal_validation import cross_modal_marker_validation
 from multiome_agent.core.identity_metadata import detect_identity_columns
 from multiome_agent.logging_utils import get_logger
+from multiome_agent.menu.drug_comparison import check_batch_confound, drug_differential_accessibility, drug_differential_expression
 from multiome_agent.menu.peak_to_gene_links import peak_to_gene_links
 from multiome_agent.menu.regulon_inference import regulon_inference
 from multiome_agent.menu.tf_motif_correlation import tf_motif_correlation
@@ -306,6 +307,76 @@ TOOLS = [
         },
     },
     {
+        "name": "drug_differential_expression",
+        "description": (
+            "RNA differential expression between two named groups of a drug/treatment condition "
+            "column (e.g. 'treated' vs 'control' of 'rna.drug_treatment', found via "
+            "check_for_condition_groups) -- real Wilcoxon differential expression, returning "
+            "specific up/down genes by effect size, not an aggregate summary. If this dataset "
+            "pools multiple cell lines, ALWAYS pass `cell_line` set to one specific real line "
+            "rather than leaving this pooled across every line -- a pooled comparison can be "
+            "entirely a between-line composition confound (whichever line happens to be "
+            "over-represented in the treated arm looks like a 'treatment effect', with zero real "
+            "within-line signal), not a real drug effect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "column_key": {"type": "string", "description": "e.g. 'rna.drug_treatment', from check_for_condition_groups' output"},
+                "treated": {"type": "string", "description": "The treated group's real value in that column"},
+                "control": {"type": "string", "description": "The control group's real value in that column"},
+                "cell_line": {
+                    "type": "string",
+                    "description": "Restrict the comparison to only this cell line's own cells -- required for a defensible claim on any dataset that pools multiple cell lines.",
+                },
+            },
+            "required": ["column_key", "treated", "control"],
+        },
+    },
+    {
+        "name": "drug_differential_accessibility",
+        "description": (
+            "ATAC-side analog of drug_differential_expression: real per-PEAK differential "
+            "accessibility (Wilcoxon on real peak counts, not gene activity) between the same two "
+            "condition groups. Same cell_line-scoping requirement on a pooled multi-cell-line "
+            "dataset."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "column_key": {"type": "string", "description": "e.g. 'rna.drug_treatment', from check_for_condition_groups' output"},
+                "treated": {"type": "string", "description": "The treated group's real value in that column"},
+                "control": {"type": "string", "description": "The control group's real value in that column"},
+                "cell_line": {
+                    "type": "string",
+                    "description": "Restrict the comparison to only this cell line's own cells -- required for a defensible claim on any dataset that pools multiple cell lines.",
+                },
+            },
+            "required": ["column_key", "treated", "control"],
+        },
+    },
+    {
+        "name": "check_batch_confound",
+        "description": (
+            "Real, deterministic check (chi-squared test of independence on the real contingency "
+            "table) for whether a condition column's treated/control grouping is statistically "
+            "confounded with a batch column -- i.e. whether batch and treatment assignment are "
+            "independent. ALWAYS call this before trusting ANY drug_differential_expression/"
+            "drug_differential_accessibility result: if batch and treatment are NOT independent "
+            "(likely_confound=true), the differential result could be explained by batch alone, "
+            "not a real drug effect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "column_key": {"type": "string", "description": "e.g. 'rna.drug_treatment', from check_for_condition_groups' output"},
+                "batch_column": {"type": "string", "description": "e.g. 'batch', a real column in this dataset's RNA .obs"},
+                "cell_line": {"type": "string", "description": "Restrict the check to only this cell line's own cells"},
+            },
+            "required": ["column_key", "batch_column"],
+        },
+    },
+    {
         "name": "get_qc_summary",
         "description": (
             "Get a summary of this dataset's fixed-core QC and clustering numbers "
@@ -450,10 +521,26 @@ def _execute_tool(name: str, tool_input: dict, mdata, qc_summary: str | None, co
             return json.dumps(tool_input), False
         elif name == "record_judger_verdict":
             return json.dumps(tool_input), False
+        elif name == "record_qc_verdict":
+            return json.dumps(tool_input), False
         elif name == "check_for_condition_groups":
             result = detect_condition_groups(mdata)
         elif name == "condition_group_qc":
             result = condition_group_qc(mdata, tool_input["column_key"])
+        elif name == "drug_differential_expression":
+            result = drug_differential_expression(
+                mdata, tool_input["column_key"], tool_input["treated"], tool_input["control"],
+                cell_line=tool_input.get("cell_line"),
+            )
+        elif name == "drug_differential_accessibility":
+            result = drug_differential_accessibility(
+                mdata, tool_input["column_key"], tool_input["treated"], tool_input["control"],
+                cell_line=tool_input.get("cell_line"),
+            )
+        elif name == "check_batch_confound":
+            result = check_batch_confound(
+                mdata, tool_input["column_key"], tool_input["batch_column"], cell_line=tool_input.get("cell_line"),
+            )
         elif name == "get_qc_summary":
             return qc_summary if qc_summary is not None else format_qc_summary(fixed_core_summary(mdata)), False
         elif name == "run_analysis_code":

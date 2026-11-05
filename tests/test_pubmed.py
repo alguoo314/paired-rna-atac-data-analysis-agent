@@ -24,6 +24,25 @@ def test_get_with_retry_retries_on_real_500_not_just_429():
     ok_resp.raise_for_status.assert_called_once()
 
 
+def test_search_pubmed_sorts_by_relevance_not_most_recent(monkeypatch, tmp_path):
+    # Real bug: ESearch's default sort is most-recent-first, so "top result"
+    # silently meant "newest paper matching the keywords," not "most
+    # relevant" -- a real grounding-quality issue for a literature RAG step.
+    monkeypatch.setattr("multiome_agent.tools.pubmed.CACHE_DIR", tmp_path)
+    captured_params = {}
+
+    def _fake_get_with_retry(url, params, timeout):
+        captured_params.update(params)
+        resp = MagicMock()
+        if "esearch.fcgi" in url:
+            resp.json.return_value = {"esearchresult": {"idlist": []}}
+        return resp
+
+    monkeypatch.setattr("multiome_agent.tools.pubmed._get_with_retry", _fake_get_with_retry)
+    search_pubmed("a query that will not hit the cache")
+    assert captured_params.get("sort") == "relevance"
+
+
 def test_search_pubmed_returns_titles_only():
     results = search_pubmed("SPI1 PU.1 myeloid chromatin accessibility")
     assert len(results) > 0

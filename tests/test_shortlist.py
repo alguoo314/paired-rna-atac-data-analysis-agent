@@ -106,6 +106,28 @@ def test_verify_candidate_in_data_dispatches_rna_marker(monkeypatch):
     assert verify_candidate_in_data(mdata, "rna_marker", "XYZ") is False
 
 
+def test_verify_candidate_in_data_motif_no_cell_line_falls_back_to_existence_check(monkeypatch):
+    monkeypatch.setattr(
+        "multiome_agent.agent.shortlist.best_motif_match",
+        lambda names, primary: "MA0001.1.FOXA1" if primary == "FOXA1" else None,
+    )
+    mdata = type("M", (), {"mod": {"atac": type("A", (), {"uns": {"chromvar_motif_names": ["MA0001.1.FOXA1"]}})()}})()
+    assert verify_candidate_in_data(mdata, "motif", "FOXA1") is True
+    assert verify_candidate_in_data(mdata, "motif", "NOTAREALMOTIF") is False
+
+
+def test_verify_candidate_in_data_motif_with_cell_line_tests_real_enrichment_not_just_existence(monkeypatch):
+    # The real bug this guards against: the old check only confirmed the
+    # motif NAME exists in JASPAR's library, saying nothing about whether
+    # it's actually elevated in this specific line's own cells.
+    monkeypatch.setattr(
+        "multiome_agent.agent.shortlist.motif_enriched_in_cell_line",
+        lambda mdata, primary, cell_line: {"enriched_in_cell_line": primary == "FOXA1" and cell_line == "T-47D"},
+    )
+    assert verify_candidate_in_data(object(), "motif", "FOXA1", cell_line="T-47D") is True
+    assert verify_candidate_in_data(object(), "motif", "FOXA1", cell_line="SJSA1") is False
+
+
 def test_verify_candidate_in_data_dispatches_regulon_target(monkeypatch):
     monkeypatch.setattr(
         "multiome_agent.agent.shortlist.infer_regulon_targets",

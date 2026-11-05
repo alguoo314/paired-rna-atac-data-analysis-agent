@@ -54,7 +54,7 @@ def compute_gene_activity(mdata: MuData, snap_data) -> pd.DataFrame:
     )
 
 
-def load_protein_coding_gene_coords() -> pd.DataFrame:
+def load_protein_coding_gene_coords(mdata=None) -> pd.DataFrame:
     """Raw (un-extended) gene-body coordinates (chrom/start/end/strand) for
     every protein-coding gene, parsed from the same cached GENCODE
     annotation `compute_gene_activity` already uses (`snap.genome.hg38.annotation`,
@@ -80,7 +80,24 @@ def load_protein_coding_gene_coords() -> pd.DataFrame:
     a second GENCODE-parsing implementation -- gene-activity's promoter-
     extended window and peak-to-gene's "proximal exclusion zone" need to
     agree on the same gene body, not two independently-parsed ones.
+
+    `mdata`, if given and its `.uns` already carries a precomputed
+    `"gencode_gene_coords_subset"` (see `agent.demo_fixed_core_cache`'s
+    build step), returns that directly instead of parsing the full GENCODE
+    file from disk -- the fast path that lets a demo `peak_to_gene_links`/
+    `regulon_inference` call answer quickly even when snapatac2's genome
+    annotation hasn't been downloaded locally at all. Lossless: both
+    callers already intersect their candidate gene set with the dataset's
+    own `rna.var_names` before returning anything, so a subset restricted
+    to that same panel changes zero real results. Every other caller
+    (the real full-scale pipeline, or no `mdata` at all) is unaffected --
+    this is purely an opt-in fast path, never the only way to get here.
     """
+    if mdata is not None:
+        cached = mdata.uns.get("gencode_gene_coords_subset")
+        if cached is not None:
+            return cached
+
     path = snap.genome.hg38.annotation
     rows = []
     with gzip.open(path, "rt") as f:

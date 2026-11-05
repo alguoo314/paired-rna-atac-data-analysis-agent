@@ -120,8 +120,8 @@ make demo QUESTION="does SPI1 regulate CD14 in this dataset?"
 make demo QUESTION="is there a distal enhancer for CD3E?"   # exercises peak_to_gene_links
 ```
 
-- **Data:** `demo_cache/agent_demo_core.h5mu` (150 cells, ~85 MB), built by `agent/demo_fixed_core_cache.py`
-- **Tools:** the same 13-tool toolset as the full pipeline
+- **Data:** `demo_cache/agent_demo_core.h5mu` (150 cells, ~86 MB), built by `agent/demo_fixed_core_cache.py` -- also ships a small GENCODE gene-coordinates subset (restricted to this demo's own RNA panel) directly inside the cache, so a `peak_to_gene_links`/`regulon_inference` question answers fast without needing to parse (or download) the full genome annotation at query time
+- **Tools:** the same 16-tool toolset as the full pipeline
 
 > **Note:** The demo is illustrative only, since it runs on a small subsample. The full-scale analyses are in [`reports/examples/`](reports/examples/). If you'd rather not run anything, those reports are the finished output of this exact pipeline.
 

@@ -72,7 +72,14 @@ def _cache_key_ids(pmids: list[str]) -> str:
 
 
 def search_pubmed(query: str, top_n: int = TOP_N) -> list[dict]:
-    """Return up to `top_n` PubMed hits for `query` as [{pmid, title, journal, year}]."""
+    """Return up to `top_n` PubMed hits for `query` as [{pmid, title, journal, year}],
+    ranked by PubMed's own relevance sort (`sort=relevance` on ESearch) --
+    NOT the ESearch default, which is most-recent-first. Without this, "top
+    result" silently meant "newest paper that matches the keywords," not
+    "most relevant," which is a real grounding-quality bug for a literature
+    RAG step: a highly-cited, exact-match older paper could rank below an
+    unrelated recent one that merely happens to share terms.
+    """
     cache_file = CACHE_DIR / f"{_cache_key(query)}.json"
     if cache_file.exists():
         logger.info("PubMed cache hit for query=%r", query)
@@ -81,7 +88,7 @@ def search_pubmed(query: str, top_n: int = TOP_N) -> list[dict]:
     logger.info("PubMed cache miss, querying E-utilities for query=%r", query)
     search_resp = _get_with_retry(
         f"{EUTILS_BASE}/esearch.fcgi",
-        params={**TOOL_PARAMS, "db": "pubmed", "term": query, "retmax": top_n, "retmode": "json"},
+        params={**TOOL_PARAMS, "db": "pubmed", "term": query, "retmax": top_n, "retmode": "json", "sort": "relevance"},
         timeout=15,
     )
     pmids = search_resp.json()["esearchresult"]["idlist"]

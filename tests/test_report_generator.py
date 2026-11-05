@@ -16,7 +16,8 @@ import pytest
 
 from multiome_agent.agent.checklist_generator import ChecklistItem
 from multiome_agent.agent.novelty import JudgedFinding
-from multiome_agent.agent.report_generator import ReportCost, _extract_identity_blurb, _render_section1, _render_section2, _render_section3, _render_section4, _render_section5, generate_report
+from multiome_agent.agent.qc_verdict import QCVerdict
+from multiome_agent.agent.report_generator import ReportCost, _extract_identity_blurb, _render_drug_comparison_section, _render_section1, _render_section2, _render_section3, _render_section4, _render_section5, generate_report
 from multiome_agent.core.clustering import RNA_CLUSTER_KEY
 
 
@@ -94,9 +95,21 @@ def test_report_cost_aggregates_and_renders():
 
 def test_render_section1_includes_loader_decision_and_summary():
     decision = MagicMock(strategy="combined_single_file", reasoning="both feature types in one file")
-    text = _render_section1("tenx-cell-ranger", "500 cells, ...", decision)
+    qc_verdict = QCVerdict(status="usable", reasons=["clean QC numbers"])
+    text = _render_section1("tenx-cell-ranger", "500 cells, ...", decision, qc_verdict)
     assert "combined_single_file" in text
     assert "500 cells" in text
+
+
+def test_render_section1_shows_qc_verdict_at_the_top():
+    decision = MagicMock(strategy="combined_single_file", reasoning="x")
+    qc_verdict = QCVerdict(status="usable with caveats", reasons=["elevated doublet rate", "thin A-673 arm"])
+    text = _render_section1("shareseq-multi-cell-lines", "summary text", decision, qc_verdict)
+    assert "USABLE WITH CAVEATS" in text
+    assert "elevated doublet rate" in text
+    assert "thin A-673 arm" in text
+    # the verdict must render BEFORE the data-source line, i.e. at the top of section 1
+    assert text.index("USABLE WITH CAVEATS") < text.index("**Data source:**")
 
 
 def test_render_section2_handles_empty_and_populated():
@@ -155,6 +168,25 @@ def test_render_section5_no_findings_and_negative_control():
     assert "No novel findings were proposed" in text
     assert "0 finding(s)" in text
     assert "limitation A" in text
+
+
+def test_render_drug_comparison_section_no_findings():
+    condition_check = {"condition_columns_found": {"rna.drug_treatment": {"DMSO": 60, "Drug_X": 40}}}
+    text = _render_drug_comparison_section([], condition_check)
+    assert "rna.drug_treatment" in text
+    assert "No drug-comparison findings were proposed" in text
+
+
+def test_render_drug_comparison_section_renders_judged_findings():
+    j = JudgedFinding(
+        finding="GENE_X goes up under Drug_X in T-47D", evidence="lfc=1.8, padj=1e-10",
+        confidence="medium", verdict={"verdict": "survives", "likely_artifact": False, "already_known": False}, judge_cost_usd=0.5,
+        cell_lines=["T-47D"],
+    )
+    condition_check = {"condition_columns_found": {"rna.drug_treatment": {"DMSO": 60, "Drug_X": 40}}}
+    text = _render_drug_comparison_section([j], condition_check)
+    assert "GENE_X goes up under Drug_X in T-47D" in text
+    assert "survives" in text
 
 
 def test_render_section5_missing_verdict_is_labeled():
@@ -230,8 +262,12 @@ def test_generate_report_orchestration_writes_file_with_all_mocked(tmp_path):
         "total_cost_usd": 0.01,
     }
 
+    qc_verdict = QCVerdict(status="usable", reasons=["clean QC numbers"])
+    qc_verdict_result = _FakeAgentResult()
+
     with patch("multiome_agent.agent.report_generator.load_fixed_core_via_agent_decision", return_value=(fake_mdata, fake_decision)), \
          patch("multiome_agent.agent.report_generator._dataset_summary_text", return_value="500 cells summary"), \
+         patch("multiome_agent.agent.report_generator.generate_qc_verdict", return_value=(qc_verdict, qc_verdict_result)), \
          patch("multiome_agent.core.condition_detection.detect_condition_groups", return_value={"is_control_only": True, "condition_columns_found": {}}), \
          patch("multiome_agent.agent.report_generator.generate_checklist", return_value=(checklist_items, checklist_result)), \
          patch("multiome_agent.agent.report_generator.propose_novel_findings", return_value=(findings, novelty_result)), \
@@ -248,3 +284,50 @@ def test_generate_report_orchestration_writes_file_with_all_mocked(tmp_path):
     assert (tmp_path / "tenx-cell-ranger-report.md").exists()
     assert "PBMC" in result["report_text"] or "This is PBMC" in result["report_text"]
     assert result["cost"].total > 0
+    # Control-only (both current real datasets) -- section 6 must not appear at all.
+    assert "## 6. Drug/condition comparison" not in result["report_text"]
+
+
+def test_generate_report_renders_drug_comparison_section_when_real_condition_axis_found(tmp_path):
+    fake_mdata = MagicMock()
+    fake_mdata.mod["rna"].obs[RNA_CLUSTER_KEY].nunique.return_value = 3
+    fake_decision = MagicMock(strategy="combined_single_file", reasoning="one file, both feature types", cost_usd=0.001)
+    checklist_items = [ChecklistItem("rna_marker", "CD14", "monocyte marker", "1", "Nature", "2020", True)]
+    checklist_result = _FakeAgentResult(answer="This is PBMC.")
+    findings = [{"finding": "F1", "evidence": "ev1", "confidence": "low"}]
+    novelty_result = _FakeAgentResult()
+    judged = [JudgedFinding(finding="F1", evidence="ev1", confidence="low", verdict={"verdict": "struck_down", "likely_artifact": True, "artifact_reasoning": "r", "already_known": False, "novelty_reasoning": "r2"}, judge_cost_usd=0.02)]
+    fake_model_eval_result = {
+        "model": "claude-haiku-4-5",
+        "scenario_results": [dict(vars(_FakeScenarioResult()))],
+        "total_cost_usd": 0.01,
+    }
+    qc_verdict = QCVerdict(status="usable", reasons=["clean QC numbers"])
+    qc_verdict_result = _FakeAgentResult()
+
+    drug_findings = [{"finding": "DRUG_FINDING_MARKER_X", "evidence": "ev", "confidence": "medium", "finding_type": "positive_relationship"}]
+    drug_proposal_result = _FakeAgentResult()
+    drug_judged = [JudgedFinding(finding="DRUG_FINDING_MARKER_X", evidence="ev", confidence="medium", verdict={"verdict": "survives", "likely_artifact": False, "already_known": False}, judge_cost_usd=0.3)]
+
+    with patch("multiome_agent.agent.report_generator.load_fixed_core_via_agent_decision", return_value=(fake_mdata, fake_decision)), \
+         patch("multiome_agent.agent.report_generator._dataset_summary_text", return_value="500 cells summary"), \
+         patch("multiome_agent.agent.report_generator.generate_qc_verdict", return_value=(qc_verdict, qc_verdict_result)), \
+         patch("multiome_agent.core.condition_detection.detect_condition_groups", return_value={"is_control_only": False, "condition_columns_found": {"rna.drug_treatment": {"DMSO": 60, "Drug_X": 40}}}), \
+         patch("multiome_agent.agent.report_generator.propose_drug_comparison_findings", return_value=(drug_findings, drug_proposal_result)) as mock_propose_drug, \
+         patch("multiome_agent.agent.report_generator.generate_checklist", return_value=(checklist_items, checklist_result)), \
+         patch("multiome_agent.agent.report_generator.propose_novel_findings", return_value=(findings, novelty_result)), \
+         patch("multiome_agent.agent.report_generator.judge_novel_findings", side_effect=lambda f, *a, **k: drug_judged if f is drug_findings else judged), \
+         patch("multiome_agent.agent.report_generator.check_novelty_negative_control", return_value={"n_findings_proposed": 0, "findings": [], "cost_usd": 0.01, "answer": "none"}), \
+         patch("multiome_agent.agent.report_generator.systematic_cross_modal_sweep", return_value=[{"gene": "CD14", "rna_cluster": "1", "matched_atac_cluster": "1", "gene_activity_confirms": True}]), \
+         patch("multiome_agent.eval.eval_harness.build_scenarios", return_value=[{"fault_type": "clean_control"}]), \
+         patch("multiome_agent.eval.eval_harness.run_model_eval", return_value=fake_model_eval_result), \
+         patch("multiome_agent.eval.fault_injection.shuffle_rna_atac_pairing", return_value=(fake_mdata, MagicMock())), \
+         patch("multiome_agent.agent.qc_summary.fixed_core_summary", return_value={}), \
+         patch("multiome_agent.agent.qc_summary.format_qc_summary", return_value="shuffled summary"):
+        result = generate_report("tenx-cell-ranger", model="claude-haiku-4-5", out_path=tmp_path / "report.md")
+
+    mock_propose_drug.assert_called_once()
+    assert "## 6. Drug/condition comparison" in result["report_text"]
+    assert "DRUG_FINDING_MARKER_X" in result["report_text"]
+    assert "drug_comparison_proposal" in result["cost"].render()
+    assert "drug_comparison_judging" in result["cost"].render()

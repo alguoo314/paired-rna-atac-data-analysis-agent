@@ -191,7 +191,13 @@ Cluster-marker status ("is this gene a marker of this line's cluster") is NOT a 
 this check and is NOT decisive on its own: it only reflects DIFFERENTIAL expression relative to \
 OTHER clusters, and says nothing about absolute detection within the named line's own cells -- a \
 real past mistake was treating "not a marker" as sufficient grounds for likely_artifact=True when \
-the actually-decisive number (detection rate) hadn't been checked at all.
+the actually-decisive number (detection rate) hadn't been checked at all. For a treated-vs-control \
+drug/condition-comparison finding SPECIFICALLY (from `drug_differential_expression`/ \
+`drug_differential_accessibility`), you MUST ALSO call `check_batch_confound` on the SAME \
+condition column and cell_line scope -- if batch and treatment assignment are NOT statistically \
+independent (`likely_confound=true`), the differential result could be explained by batch alone, \
+not a real drug effect, and that alone is strong grounds for likely_artifact=True regardless of \
+how significant the expression/accessibility difference looks.
 2. Novelty check: use search_pubmed then fetch_pubmed_abstracts (actually read the abstract, \
 don't just check titles) to look for existing literature that already reports this same \
 relationship.
@@ -214,16 +220,26 @@ class JudgedFinding:
 def propose_novel_findings(
     mdata, qc_summary: str, dataset_context: str | None = None, checklist_summary: str = "",
     model: str | None = None, max_turns: int = 45, is_negative_control: bool = False,
+    custom_question: str | None = None,
 ) -> tuple[list[dict], AgentRunResult]:
     """`dataset_context` defaults to `OWN_DATA_CONTEXT` (see
     `checklist_generator.generate_checklist`'s docstring for why). Default
     `max_turns` raised from the original 25: trying up to 6 candidates, each
     needing its own tool-evidence gathering AND a literature self-check
     before the model decides whether to record it, needs real headroom.
+
+    `custom_question`, if given, replaces the default `_novelty_question`
+    entirely -- lets a caller reuse this same propose+extract machinery
+    (and `record_novel_finding`'s schema, and the Judger pipeline
+    downstream) for a structurally different investigation without
+    duplicating any of it. Used by `agent.drug_comparison` for the
+    treated-vs-control branch: a drug-effect finding is still "a specific,
+    checkable pattern in this data," just investigated with different
+    tools and a different question.
     """
     result = run_agent(
-        _novelty_question(checklist_summary, is_negative_control=is_negative_control), model=model,
-        max_turns=max_turns, mdata=mdata, qc_summary=qc_summary, tools=NOVELTY_TOOLS,
+        custom_question if custom_question is not None else _novelty_question(checklist_summary, is_negative_control=is_negative_control),
+        model=model, max_turns=max_turns, mdata=mdata, qc_summary=qc_summary, tools=NOVELTY_TOOLS,
         dataset_context=dataset_context if dataset_context is not None else OWN_DATA_CONTEXT,
     )
     findings = [tc["input"] for tc in result.tool_calls if tc["name"] == "record_novel_finding" and not tc.get("is_error", False)]

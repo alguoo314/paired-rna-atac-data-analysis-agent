@@ -252,7 +252,7 @@ def peak_to_gene_links(
     else:
         n_cells = rna.n_obs
 
-    gene_coords = load_protein_coding_gene_coords()
+    gene_coords = load_protein_coding_gene_coords(mdata)
     gene_row = gene_coords[gene_coords["gene_name"] == gene]
     if gene_row.empty:
         logger.info("peak_to_gene_links: gene %r not in protein-coding GENCODE coordinates", gene)

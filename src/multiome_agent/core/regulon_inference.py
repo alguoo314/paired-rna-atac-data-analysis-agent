@@ -312,7 +312,7 @@ def infer_regulon_targets(
         )
     }
 
-    gene_coords = load_protein_coding_gene_coords()
+    gene_coords = load_protein_coding_gene_coords(mdata)
     other_coords = gene_coords[gene_coords["gene_name"] != tf_gene]
     promoter_windows = promoter_extend_gene_windows(other_coords, proximal_upstream_bp)
 

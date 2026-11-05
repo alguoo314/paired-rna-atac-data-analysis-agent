@@ -121,7 +121,7 @@ def _build_synthetic_regulon_mdata():
     return _FakeMuData(rna, atac)
 
 
-def _fake_gene_coords():
+def _fake_gene_coords(mdata=None):
     return pd.DataFrame({
         "chrom": ["chr1"] * 5,
         "gene_name": ["TF1", "TARGETA", "TARGETB", "TARGETC", "TARGETD"],
@@ -175,7 +175,7 @@ def _build_many_targets_mdata(n_genes=6, n_cells=10):
 
 def test_infer_regulon_targets_truncates_but_target_gene_always_included(monkeypatch):
     mdata, gene_coords = _build_many_targets_mdata(n_genes=6, n_cells=10)
-    monkeypatch.setattr("multiome_agent.core.regulon_inference.load_protein_coding_gene_coords", lambda: gene_coords)
+    monkeypatch.setattr("multiome_agent.core.regulon_inference.load_protein_coding_gene_coords", lambda mdata=None: gene_coords)
 
     full = infer_regulon_targets(mdata, "TF1", window_bp=20000, proximal_upstream_bp=2000, top_n=1000)
     assert full["n_candidate_targets"] == 6  # the TRUE count, independent of any cap
@@ -317,7 +317,7 @@ def _build_cell_line_confound_mdata():
     return _FakeMuData(rna, atac)
 
 
-def _confound_gene_coords():
+def _confound_gene_coords(mdata=None):
     return pd.DataFrame({
         "chrom": ["chr1"] * 3,
         "gene_name": ["TF1", "CONFOUND", "REAL_TARGET"],

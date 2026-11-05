@@ -6,7 +6,7 @@ cells, ~2.6GB, never committed, since GitHub hard-rejects any git-tracked
 file over 100MB and this project's own real full-scale rebuild takes
 60-90+ minutes).
 
-Committable at all only because it's trimmed to exactly what the 13 agent
+Committable at all only because it's trimmed to exactly what the agent
 tools (`agent/loop.py`'s `TOOLS`) read at query time -- confirmed by
 grepping every tool's implementation, not guessed: RNA log-normalized
 expression + QC/cluster `.obs` columns + `rank_genes_groups`; ATAC
@@ -51,6 +51,7 @@ import scipy.sparse as sp
 from mudata import MuData, read_h5mu, write_h5mu
 
 from multiome_agent.config import REPO_ROOT
+from multiome_agent.core.gene_activity import load_protein_coding_gene_coords
 from multiome_agent.core.motif_deviations import motif_name_tokens
 from multiome_agent.core.pipeline import run_fixed_core
 from multiome_agent.data.loader import RAW_DIR, load_pbmc_multiome
@@ -127,6 +128,36 @@ def _trim_to_tool_readable_fields(mdata: MuData) -> MuData:
     return mdata
 
 
+def _embed_gencode_gene_coords_subset(mdata: MuData) -> None:
+    """Precomputes the full GENCODE protein-coding gene-coordinates table
+    ONCE (real work: parses the full annotation, triggering snapatac2's
+    genome-annotation download if it isn't already cached locally -- fine
+    here, this only runs at BUILD time, by a maintainer) and embeds a
+    subset restricted to genes actually present in this demo's RNA panel
+    directly into `mdata.uns["gencode_gene_coords_subset"]`.
+
+    This is what lets a demo `peak_to_gene_links`/`regulon_inference`
+    question answer fast on a fresh clone: without it, the FIRST such call
+    would need to parse (or even download) the full GENCODE annotation at
+    query time -- see `core.gene_activity.load_protein_coding_gene_coords`'s
+    docstring for the opt-in fast path this feeds.
+
+    Lossless for functionality: both tools already intersect their
+    candidate gene set with `rna.var_names` before returning anything, so
+    restricting the coordinate table to this same panel upfront changes
+    zero real results -- same reasoning already applied to this cache's
+    motif_match columns above.
+    """
+    full_coords = load_protein_coding_gene_coords()
+    rna_genes = {g.upper() for g in mdata.mod["rna"].var_names}
+    subset = full_coords[full_coords["gene_name"].str.upper().isin(rna_genes)].reset_index(drop=True)
+    mdata.uns["gencode_gene_coords_subset"] = subset
+    logger.info(
+        "Embedded GENCODE gene-coords subset: %d/%d protein-coding genes reachable from this demo's RNA panel",
+        len(subset), len(full_coords),
+    )
+
+
 def build_demo_cache(n_cells: int = DEMO_N_CELLS, seed: int = DEMO_SEED) -> MuData:
     """Builds the small, trimmed, committable demo cache from scratch and
     writes it to `DEMO_CACHE_PATH`. Real work -- still pays the ~17-20 min
@@ -137,6 +168,7 @@ def build_demo_cache(n_cells: int = DEMO_N_CELLS, seed: int = DEMO_SEED) -> MuDa
     mdata = load_pbmc_multiome(n_cells=n_cells, seed=seed, force_reload=False)
     mdata = run_fixed_core(mdata, FRAGMENTS_FILE)
     mdata = _trim_to_tool_readable_fields(mdata)
+    _embed_gencode_gene_coords_subset(mdata)
     DEMO_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     write_h5mu(DEMO_CACHE_PATH, mdata)
     logger.info("Wrote demo cache to %s", DEMO_CACHE_PATH)

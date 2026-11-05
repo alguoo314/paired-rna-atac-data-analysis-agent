@@ -280,7 +280,7 @@ def _build_cell_line_confound_mdata():
     return _FakeMuData(rna, atac)
 
 
-def _gene1_coords():
+def _gene1_coords(mdata=None):
     return pd.DataFrame({
         "chrom": ["chr1"], "gene_name": ["GENE1"], "strand": ["+"], "start": [10000], "end": [11000],
     })

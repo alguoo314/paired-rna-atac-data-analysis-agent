@@ -1,15 +1,20 @@
-"""Orchestrates the full 5-section comprehensive report per dataset:
+"""Orchestrates the full 5-section comprehensive report per dataset (plus
+an optional 6th section, see below):
 
-1. Dataset & fixed-core summary
+1. Dataset & fixed-core summary -- opens with a QC-verdict (agent.qc_verdict)
 2. Gene activity + chromVAR + cross-modal cell-type-call validation
 3. Known-biology checklist via literature RAG (identity discovered, not told)
 4. Fault-injection eval
 5. Novel findings + adversarial judging + limitations
+6. Drug/condition comparison (treated vs. control) -- ONLY rendered when
+   `detect_condition_groups` finds a real condition axis; a zero-cost,
+   zero-API-call no-op for a control-only dataset (both current ones).
 
 This module is orchestration and markdown rendering ONLY -- every actual
 analysis step reuses an already-built, already-validated piece
-(loader_selector, checklist_generator, novelty, fault-injection/scoring,
-cross_modal_validation). No new analysis logic lives here.
+(loader_selector, checklist_generator, novelty, drug_comparison,
+fault-injection/scoring, cross_modal_validation). No new analysis logic
+lives here.
 """
 
 from __future__ import annotations
@@ -19,8 +24,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from multiome_agent.agent.checklist_generator import ChecklistItem, generate_checklist
+from multiome_agent.agent.drug_comparison import propose_drug_comparison_findings
 from multiome_agent.agent.novelty import JudgedFinding, check_novelty_negative_control, judge_novel_findings, propose_novel_findings
 from multiome_agent.agent.prompts import PBMC_DATASET_CONTEXT, OWN_DATA_CONTEXT
+from multiome_agent.agent.qc_verdict import generate_qc_verdict
 from multiome_agent.config import REPO_ROOT
 from multiome_agent.core.clustering import RNA_CLUSTER_KEY
 from multiome_agent.core.cross_modal_validation import systematic_cross_modal_sweep
@@ -38,8 +45,13 @@ DRUG_BRANCH_NOTE = (
     "This dataset has no drug/treatment condition axis (checked by column "
     "name via `check_for_condition_groups`, not assumed) -- every cell is a "
     "control. The pipeline supports condition-level analysis (per-arm QC via "
-    "`condition_group_qc`, condition-specific literature RAG) for a future "
-    "dataset that does have one; it's simply not exercised here."
+    "`condition_group_qc`; real treated-vs-control differential expression/"
+    "accessibility per cell line via `drug_differential_expression`/"
+    "`drug_differential_accessibility`; a batch-confound check via "
+    "`check_batch_confound`; condition-specific literature RAG and "
+    "adversarial judging) for a future dataset that does have one; it's "
+    "simply not exercised here, and costs nothing when there's no axis to "
+    "investigate."
 )
 
 
@@ -68,11 +80,20 @@ def _dataset_summary_text(source: str, mdata) -> str:
     return format_shareseq_qc_summary(shareseq_fixed_core_summary(mdata))
 
 
-def _render_section1(source: str, dataset_summary_text: str, loader_decision) -> str:
+def _render_qc_verdict(qc_verdict) -> str:
+    lines = [f"**QC verdict: {qc_verdict.status.upper()}**\n\n"]
+    for reason in qc_verdict.reasons:
+        lines.append(f"- {reason}\n")
+    lines.append("\n")
+    return "".join(lines)
+
+
+def _render_section1(source: str, dataset_summary_text: str, loader_decision, qc_verdict) -> str:
     label = "public 10x PBMC multiome" if source == "tenx-cell-ranger" else "private multi-cell-line multiome"
     return (
         "## 1. Dataset & fixed-core summary\n\n"
-        f"**Data source:** {label} data. Loading strategy was determined by the agent itself "
+        + _render_qc_verdict(qc_verdict)
+        + f"**Data source:** {label} data. Loading strategy was determined by the agent itself "
         f"from real file structure, not pre-specified: it decided `{loader_decision.strategy}` "
         f"-- \"{loader_decision.reasoning}\"\n\n"
         f"{dataset_summary_text}\n"
@@ -288,6 +309,34 @@ def _render_unjudged_concern(f: dict) -> str:
     )
 
 
+def _render_drug_comparison_section(judged: list[JudgedFinding], condition_check: dict) -> str:
+    """Only ever called when `condition_check["is_control_only"]` is False
+    -- i.e. this section doesn't exist at all in a report for a control-
+    only dataset (both current ones), matching `generate_report`'s
+    conditional append. Reuses `_render_judged_finding` -- a drug-
+    comparison finding is adversarially judged by the exact same Judger
+    pipeline as section 5's findings (see `agent.drug_comparison`'s
+    module docstring), just extended to require an independent
+    `check_batch_confound` call for this finding type.
+    """
+    columns = ", ".join(f"`{c}`" for c in condition_check.get("condition_columns_found", {}))
+    lines = [
+        "## 6. Drug/condition comparison (treated vs. control)\n\n",
+        f"Real condition axis found: {columns}. Each finding below (if any) comes from real "
+        "treated-vs-control differential expression/accessibility, scoped per cell line where "
+        "applicable, with an independent batch-confound check and a literature check on whether "
+        "the observed direction matches a published drug effect.\n\n",
+    ]
+    if not judged:
+        lines.append(
+            "No drug-comparison findings were proposed (or none survived their own "
+            "batch-confound/literature self-check) this run -- a legitimate outcome, not a failure.\n\n"
+        )
+    for j in judged:
+        lines.append(_render_judged_finding(j))
+    return "".join(lines)
+
+
 def _render_section5(
     judged: list[JudgedFinding], negative_control: dict, limitations: list[str]
 ) -> str:
@@ -355,7 +404,24 @@ def generate_report(source: str, model: str, out_path: Path | None = None) -> di
     cost.add("loader_decision", loader_decision.cost_usd)
     dataset_summary_text = _dataset_summary_text(source, mdata)
 
+    # QC-verdict gate: runs right after the fixed core, before any of the
+    # more expensive known-biology/novelty steps below, so a bad run is
+    # flagged up front rather than discovered after paying for everything
+    # downstream of it.
+    qc_verdict, qc_verdict_result = generate_qc_verdict(mdata, dataset_summary_text, dataset_context, model=model)
+    cost.add("qc_verdict", qc_verdict_result.estimated_cost_usd)
+
     condition_check = detect_condition_groups(mdata)
+
+    # Drug/condition comparison branch: zero-cost, zero-API-call no-op when
+    # `condition_check["is_control_only"]` (both current datasets) -- see
+    # `propose_drug_comparison_findings`'s own early-return docstring.
+    drug_findings, drug_proposal_result = propose_drug_comparison_findings(
+        mdata, condition_check, dataset_summary_text, dataset_context, model=model,
+    )
+    cost.add("drug_comparison_proposal", drug_proposal_result.estimated_cost_usd)
+    drug_judged = judge_novel_findings(drug_findings, mdata, dataset_summary_text, dataset_context, model=model)
+    cost.add("drug_comparison_judging", sum(j.judge_cost_usd for j in drug_judged))
 
     # Section 3 mechanism: identity discovery + literature-RAG checklist.
     items, checklist_result = generate_checklist(mdata, dataset_summary_text, dataset_context, model=model)
@@ -410,12 +476,14 @@ def generate_report(source: str, model: str, out_path: Path | None = None) -> di
         limitations.append(DRUG_BRANCH_NOTE)
 
     sections = [
-        _render_section1(source, dataset_summary_text, loader_decision),
+        _render_section1(source, dataset_summary_text, loader_decision, qc_verdict),
         _render_section2(cross_modal_checks, n_rna_clusters),
         _render_section3(items, checklist_result.answer),
         _render_section4(fault_injection_results_by_model, model),
         _render_section5(judged, negative_control, limitations),
     ]
+    if not condition_check["is_control_only"]:
+        sections.append(_render_drug_comparison_section(drug_judged, condition_check))
     report_text = (
         f"# Multiome QC & Hypothesis Agent report ({source})\n\n"
         f"*Model: `{model}` · total cost: ${cost.total:.4f}*\n\n"

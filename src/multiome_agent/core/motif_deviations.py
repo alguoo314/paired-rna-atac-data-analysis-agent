@@ -243,3 +243,59 @@ def tf_expression_motif_correlation(mdata: MuData, gene: str, motif_name_contain
     result = {"gene": gene, "motif": motif_name, "spearman_rho": float(rho), "pvalue": float(pval)}
     mdata.uns["tf_motif_sanity_check"] = result
     return result
+
+
+def motif_enriched_in_cell_line(mdata: MuData, motif_name_contains: str, cell_line: str, max_pval: float = 0.05) -> dict:
+    """Whether `motif_name_contains`'s chromVAR deviation score is actually
+    HIGHER in `cell_line`'s own cells than in every other cell -- the real
+    accessibility check a known-biology "motif" claim needs, not just "this
+    motif exists in JASPAR's library" (the old, much weaker check: a motif
+    name matching JASPAR says nothing about whether it's actually elevated
+    in THIS dataset's cells at all).
+
+    Uses a one-sided Mann-Whitney U test (identity group > rest) on the
+    real per-cell deviation scores -- distribution-free, appropriate for a
+    score that need not be normally distributed. Grouped by the dataset's
+    own ground-truth `cell_line_name` labels rather than an inferred ATAC
+    Leiden cluster: those labels are the more precise, more direct answer
+    to "cells of this identity" (same convention `peak_to_gene_links`/
+    `regulon_inference`'s own `cell_line` parameter already uses), and
+    going through a noisy intermediate unsupervised cluster would only add
+    a second source of error on top of the clustering's own imperfect
+    recovery of real identity (see CLAUDE.md's design principle 6).
+
+    Returns an error dict (not a raised exception) for a dataset with no
+    `cell_line_name` column, a motif with no match, or no cells for
+    `cell_line` -- same convention as `peak_to_gene_links`/
+    `infer_regulon_targets`.
+    """
+    from scipy.stats import mannwhitneyu
+
+    rna = mdata.mod["rna"]
+    if "cell_line_name" not in rna.obs.columns:
+        return {"error": "This dataset has no 'cell_line_name' column -- cell_line scoping isn't applicable here."}
+
+    dev_df = mdata.mod["atac"].obsm["chromvar_deviations"]
+    motif_name = best_motif_match(dev_df.columns, motif_name_contains)
+    if motif_name is None:
+        return {"error": f"No motif matching {motif_name_contains!r} among chromvar_deviations columns"}
+
+    mask = (rna.obs["cell_line_name"] == cell_line).to_numpy()
+    n_cells = int(mask.sum())
+    if n_cells == 0:
+        return {"error": f"No cells found with cell_line_name == {cell_line!r}."}
+
+    deviation = dev_df[motif_name].reindex(rna.obs_names).to_numpy()
+    in_group, out_group = deviation[mask], deviation[~mask]
+    stat, pval = mannwhitneyu(in_group, out_group, alternative="greater")
+    enriched = bool(pval < max_pval)
+
+    logger.info(
+        "motif_enriched_in_cell_line: %s in %s (n=%d): mean_in=%.3f mean_rest=%.3f p=%.2e enriched=%s",
+        motif_name, cell_line, n_cells, in_group.mean(), out_group.mean(), pval, enriched,
+    )
+    return {
+        "motif": motif_name, "cell_line": cell_line, "n_cells": n_cells,
+        "mean_deviation_in_cell_line": float(in_group.mean()), "mean_deviation_rest": float(out_group.mean()),
+        "pvalue": float(pval), "enriched_in_cell_line": enriched,
+    }
